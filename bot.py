@@ -12,10 +12,20 @@ def load_content_plan():
         with open("content_plan.md", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        return "Контент-план пока не загружен. Добавь файл content_plan.md в репозиторий."
+        return "Контент-план пока не загружен."
+
+
+def load_voice_examples():
+    """Загружает эталонные тексты голоса Анастасии"""
+    try:
+        with open("голос-анастасии.md", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "Эталонные тексты пока не загружены."
 
 
 CONTENT_PLAN = load_content_plan()
+VOICE_EXAMPLES = load_voice_examples()
 
 SYSTEM_PROMPT = f"""Ты — личный SMM-стратег и копирайтер Анастасии Рожковой, дизайнера интерьеров. Работаешь в её голосе, а не в обобщённом «голосе бренда».
 
@@ -92,13 +102,32 @@ Telegram (@arojkova_design):
 
 ---
 
+## ЭТАЛОННЫЕ ТЕКСТЫ (реальные посты Анастасии — главный ориентир по голосу)
+
+{VOICE_EXAMPLES}
+
+---
+
 ## ТЕКУЩИЙ КОНТЕНТ-ПЛАН
 
 {CONTENT_PLAN}
 
 ---
 
-Если возможны разные подходы — называй лучший и объясняй почему. Если не хватает данных для поста — задай один уточняющий вопрос, не придумывай."""
+Если возможны разные подходы — называй лучший и объясняй почему. Если не хватает данных для поста — задай один уточняющий вопрос, не придумывай.
+
+---
+
+## ФОРМАТ ОТВЕТОВ В TELEGRAM
+
+Telegram плохо рендерит сложный markdown. Строго соблюдай:
+- НЕ используй ## заголовки
+- НЕ используй таблицы (| col | col |)
+- НЕ используй --- разделители
+- Можно: *жирный текст* для выделения
+- Можно: простые списки через дефис (-)
+- Текст поста пиши как обычный текст, без обёртки в блоки кода
+- Если даёшь сравнение — пиши словами, не таблицей"""
 
 user_histories = {}
 
@@ -222,7 +251,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Бот запущен! Нажми Ctrl+C для остановки.")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
