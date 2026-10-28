@@ -55,6 +55,8 @@ SYSTEM_PROMPT = """Ты — личный бизнес-ассистент Ана�
 - Если сообщение — это информация, которую надо запомнить (артикул, размер, контакт, «понравилось…», «зафиксируй…»), а не вопрос, — сохрани её через save_note и коротко подтверди: что записала и к какому проекту. Ничего больше не делай.
 - Проект указывай, только если он назван или очевиден. Заметка может относиться не к тому проекту, на котором она сейчас («была на МОД, увидела обои для Острова» — это Остров).
 - На вопросы «что я сохраняла…», «какие обои для Острова…» отвечай по list_notes, с номерами заметок (#12).
+- Каждая заметка автоматически записывается строкой в таблицу «Заметки | <проект>» в папке проекта (без проекта — в «Заметки | Входящие»); при смене проекта строка переезжает сама.
+- «Покажи #12», «пришли фото по обоям для Острова» → send_note_media с номерами заметок: файлы придут в чат следом за ответом.
 
 Правила:
 - Отвечай только по данным из таблиц и заметок. Чего в таблицах нет — так и скажи, не додумывай даты, суммы и договорённости.
@@ -235,6 +237,19 @@ TOOLS += [
 ]
 
 
+TOOLS.append({
+    "name": "send_note_media",
+    "description": "Присылает в чат фото/видео/голосовые заметок по их номерам («покажи #12»).",
+    "input_schema": {
+        "type": "object",
+        "properties": {"ids": {"type": "array", "items": {"type": "integer"}}},
+        "required": ["ids"],
+        "additionalProperties": False,
+    },
+})
+OUTBOX = []  # файлы, которые надо прислать после ответа Claude (кладёт send_note_media)
+
+
 def today_text():
     now = datetime.datetime.now(TZ)
     days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
@@ -242,6 +257,10 @@ def today_text():
 
 
 def run_tool(name, args):
+    if name == "send_note_media":
+        notes = [n for n in inbox.find(status="", ids=args["ids"]) if n.get("path") and os.path.exists(n["path"])]
+        OUTBOX.extend((n["kind"], n["path"], inbox.short(n)) for n in notes)
+        return {"пришлю": [f"#{n['id']}" for n in notes], "нет файла": [i for i in args["ids"] if i not in {n["id"] for n in notes}]}
     if name == "drive_search":
         found = drive.search(args["name"], args.get("kind", ""))
         return {"найдено": len(found), "файлы": found}
@@ -376,6 +395,21 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: s
     history += [{"role": "user", "content": user_text}, {"role": "assistant", "content": answer}]
     del history[:-HISTORY_TURNS * 2]
     await send_long(context.bot, update.effective_chat.id, answer)
+    await send_outbox(context.bot, update.effective_chat.id)
+
+
+async def send_outbox(bot, chat_id):
+    while OUTBOX:
+        kind, path, caption = OUTBOX.pop(0)
+        with open(path, "rb") as f:
+            if kind == "photo":
+                await bot.send_photo(chat_id, f, caption=caption[:1000])
+            elif kind == "video":
+                await bot.send_video(chat_id, f, caption=caption[:1000])
+            elif kind == "voice":
+                await bot.send_voice(chat_id, f, caption=caption[:1000])
+            else:
+                await bot.send_document(chat_id, f, caption=caption[:1000])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -883,6 +917,7 @@ def main():
         )
 
     threading.Thread(target=media.preload, daemon=True).start()
+    threading.Thread(target=inbox.mirror_all, daemon=True).start()
     log.info("Ассистент запущен")
     app.run_polling()
 

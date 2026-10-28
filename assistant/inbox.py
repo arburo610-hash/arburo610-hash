@@ -68,6 +68,7 @@ def add(kind, text="", path="", caption="", transcript="", frames=None, summary=
         }
         notes.append(note)
         _save(notes)
+    _mirror(note)
     return note
 
 
@@ -89,16 +90,32 @@ def find(project="", status=NEW, query="", ids=None):
     return result
 
 
-def update(ids, **fields):
+def update(ids, mirror=True, **fields):
     with _lock:
         notes = _load()
         changed = []
         for n in notes:
             if n["id"] in ids:
                 n.update({k: v for k, v in fields.items() if v is not None})
-                changed.append(n["id"])
+                changed.append(n)
         _save(notes)
-    return changed
+    if mirror:
+        for n in changed:
+            _mirror(n)
+    return [n["id"] for n in changed]
+
+
+def _mirror(note):
+    """Строка заметки в таблице «Заметки | <проект>» (в фоне; ошибки Google не мешают боту)."""
+    import notes_sheets
+    notes_sheets.sync_later(note, on_done=lambda table: update([note["id"]], mirror=False, table=table))
+
+
+def mirror_all():
+    """При запуске: заметки, которых ещё нет ни в одной таблице, — дописать."""
+    for n in _load():
+        if not n.get("table"):
+            _mirror(n)
 
 
 def short(n):
