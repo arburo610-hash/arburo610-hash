@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import threading
+import time
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -33,6 +34,7 @@ log = logging.getLogger("assistant")
 MODEL = "claude-opus-5-5"
 TZ = ZoneInfo("Europe/Moscow")
 HISTORY_TURNS = 10  # сколько последних реплик помнить в диалоге
+PHOTO_COMMENT_WINDOW = 5 * 60  # голосовое в течение 5 минут после фото считается подписью к ним
 MAX_TOOL_ROUNDS = 12
 
 client = anthropic.Anthropic()
@@ -363,6 +365,13 @@ async def inbox_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.exception("describe failed")
         info = None  # заметку всё равно сохраняем, просто без подписи
 
+    if kind == "voice" and transcript:
+        recent = [i for i, t in context.chat_data.get("recent_photos", []) if time.time() - t < PHOTO_COMMENT_WINDOW]
+        if recent:  # голосовое вдогонку к фото — это подпись к ним
+            context.chat_data["recent_photos"] = []
+            await attach_voice(update, context, recent, path, transcript)
+            return
+
     if kind == "voice" and info and info.is_request and transcript:
         os.remove(path)
         await reply(update, context, transcript)
@@ -374,11 +383,47 @@ async def inbox_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = f"📥 Во входящих {inbox.short(note)}"
     if kind in ("voice", "video") and not transcript:
         answer += f"\n⚠️ Не смогла расшифровать речь ({media.last_error or 'причина неизвестна'}). Файл сохранён."
-    if note["details"]:
-        answer += f"\n{note['details'][:600]}"
-    if not note["project"]:
-        answer += f"\n\nК какому проекту? Можно ответить словами: «#{note['id']} — Остров»."
+    if kind == "photo":
+        # к фото обычно следом идёт голосовое — отвечаем коротко и ждём пояснения
+        context.chat_data.setdefault("recent_photos", []).append((note["id"], time.time()))
+    else:
+        if note["details"]:
+            answer += f"\n{note['details'][:600]}"
+        if not note["project"]:
+            answer += f"\n\nК какому проекту? Можно ответить словами: «#{note['id']} — Остров»."
     await msg.reply_text(answer)
+    remember(context, f"(прислала {kind})", answer)
+
+
+def remember(context, user_text, answer):
+    """Кладём событие в историю диалога, чтобы на «это для Острова» ассистент понял, о какой заметке речь."""
+    history = context.chat_data.setdefault("history", [])
+    history += [{"role": "user", "content": user_text}, {"role": "assistant", "content": answer}]
+    del history[:-HISTORY_TURNS * 2]
+
+
+async def attach_voice(update: Update, context: ContextTypes.DEFAULT_TYPE, note_ids, voice_path, transcript):
+    """Голосовое после фото: добавляем расшифровку к этим фото и переописываем их с учётом её слов."""
+    lines, without_project = [], False
+    for note in await asyncio.to_thread(inbox.find, status="", ids=note_ids):
+        try:
+            info = await asyncio.to_thread(describe_media, "photo", note["path"], note["caption"], transcript, [])
+        except anthropic.APIError:
+            log.exception("describe failed")
+            info = None
+        fields = {"transcript": f"{note['transcript']} {transcript}".strip(), "voice_path": voice_path}
+        if info:
+            fields.update(summary=info.summary, details=info.details, tags=info.tags,
+                          project=info.project or note["project"])
+        await asyncio.to_thread(inbox.update, [note["id"]], **fields)
+        note.update(fields)
+        without_project = without_project or not note["project"]
+        lines.append(inbox.short(note) + (f"\n   {note['details'][:300]}" if note.get("details") else ""))
+    answer = f"🎙 {transcript[:500]}\n\nДобавила к фото:\n" + "\n".join(lines)
+    if without_project:
+        answer += "\n\nК какому проекту? Можно ответить словами: «это для Острова»."
+    await update.message.reply_text(answer)
+    remember(context, "(прислала голосовое к фото)", answer)
 
 
 async def visit_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
