@@ -21,6 +21,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
+import drive
 import inbox
 import media
 import reminders
@@ -61,6 +62,10 @@ SYSTEM_PROMPT = """Ты — личный бизнес-ассистент Ана�
 - Пиши по-русски, коротко и по делу, удобно для чтения с телефона: сначала главное, потом детали. Без канцелярита и воды.
 - Если просят текст для заказчика или подрядчика — пиши спокойно, уважительно, по-человечески, от первого лица Анастасии.
 - Сегодня: {today}.
+
+Google Диск (drive_search, drive_list_folder, drive_read): ассистенту доступна папка «01 ДИЗАЙНЕР Рабочая система» со всеми проектами (АР_ПРОЕКТ, в т.ч. проекты, которых нет в Пульте, например «Ленинградский проспект»).
+- Просят «посмотри в папке…», «найди ведомость…», «что в таблице отделки…» — найди через drive_search / drive_list_folder и прочитай drive_read. Давай ссылки на файлы.
+- Класть файлы на Диск ассистент пока не умеет — фото и отчёты хранятся у него и приходят в Telegram. Так и скажи, если просят сохранить в папку.
 
 Календарь и напоминания (add_reminder, list_reminders, update_reminder):
 - «запиши дату», «поставь на 3 ноября», «напомни…» → add_reminder. Даты считай от сегодняшней; если год не назван — ближайшая будущая дата.
@@ -193,6 +198,43 @@ TOOLS += [
 ]
 
 
+TOOLS += [
+    {
+        "name": "drive_search",
+        "description": "Ищет файлы и папки на Google Диске по части названия (ведомости, подборы, папки проектов).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Часть названия: «Ленинград», «ведомость отделки», «обои»"},
+                "kind": {"type": "string", "enum": ["", "папка", "таблица", "документ", "pdf", "фото"]},
+            },
+            "required": ["name", "kind"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "drive_list_folder",
+        "description": "Показывает содержимое папки на Google Диске.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"folder": {"type": "string", "description": "id папки или часть её названия"}},
+            "required": ["folder"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "drive_read",
+        "description": "Читает содержимое файла по id: Google Таблицу (все листы) или Google Документ.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"file_id": {"type": "string"}},
+            "required": ["file_id"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
 def today_text():
     now = datetime.datetime.now(TZ)
     days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
@@ -200,6 +242,13 @@ def today_text():
 
 
 def run_tool(name, args):
+    if name == "drive_search":
+        found = drive.search(args["name"], args.get("kind", ""))
+        return {"найдено": len(found), "файлы": found}
+    if name == "drive_list_folder":
+        return drive.list_folder(args["folder"])
+    if name == "drive_read":
+        return drive.read(args["file_id"])
     if name == "add_reminder":
         r = reminders.add(args["text"], args.get("project", ""), args.get("event_date", ""), args.get("event_time", ""),
                           args.get("remind_at", ""), args.get("to_calendar", False))
