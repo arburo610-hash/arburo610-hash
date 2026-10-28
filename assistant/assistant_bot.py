@@ -22,6 +22,8 @@ import sheets
 import visits
 
 logging.basicConfig(level=logging.INFO)
+# httpx печатает каждый запрос к Telegram вместе с токеном бота — в журнал это не должно попадать
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("assistant")
 
 MODEL = "claude-opus-5-5"
