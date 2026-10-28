@@ -304,8 +304,11 @@ async def visit_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         summary.append("✅ Задачи:\n" + "\n".join(f"• {t.task} — {t.owner}" for t in result.tasks))
     if result.unclear:
         summary.append("🤔 Уточните, пожалуйста:\n" + "\n".join(f"• {u}" for u in result.unclear))
-    summary.append(f"📁 Фото подписаны и переименованы, всё сохранено: {report_path}")
+    summary.append("📁 Фото подписаны и переименованы. Полный отчёт с подписями ко всем фото и расшифровками — в файле ниже.")
     await send_long(context.bot, chat, "\n\n".join(summary))
+    with open(report_path, "rb") as f:
+        await context.bot.send_document(
+            chat, f, filename=f"Выезд {visit.date} {visits.safe_name(visit.project)} {visits.safe_name(visit.place)}.md")
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Записать в таблицу проекта", callback_data="visit_save"),

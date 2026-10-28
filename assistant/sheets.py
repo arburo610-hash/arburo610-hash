@@ -2,6 +2,7 @@
 
 Доступ — через сервисный аккаунт Google. Таблицы нужно расшарить на его e-mail (права «Читатель»).
 """
+import json
 import os
 import re
 import time
@@ -36,8 +37,12 @@ _cache = {}
 def _gc():
     global _client
     if _client is None:
-        path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
-        _client = gspread.service_account(filename=path)
+        raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")  # содержимое ключа целиком — удобно для Railway
+        if raw:
+            _client = gspread.service_account_from_dict(json.loads(raw))
+        else:
+            path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
+            _client = gspread.service_account(filename=path)
     return _client
 
 
