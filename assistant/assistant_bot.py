@@ -30,6 +30,8 @@ import visits
 logging.basicConfig(level=logging.INFO)
 # httpx печатает каждый запрос к Telegram вместе с токеном бота — в журнал это не должно попадать
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpx2").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)  # иначе каждую минуту строка про проверку напоминаний
 log = logging.getLogger("assistant")
 
 MODEL = "claude-opus-5-5"
