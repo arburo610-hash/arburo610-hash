@@ -9,6 +9,7 @@ import threading
 import time
 
 import drive
+import photo_server
 import sheets
 
 log = logging.getLogger("assistant.notes_sheets")
@@ -45,12 +46,22 @@ def table_for(project):
     return known.get(INBOX_KEY)
 
 
+def _text(value):
+    """Текст ячейки, который таблица не примет за формулу."""
+    value = str(value)
+    return "'" + value if value[:1] in ("=", "+", "-", "@") else value
+
+
 def row(n):
-    photo = {"photo": "📷 есть — «покажи #%d»" % n["id"], "video": "🎬 видео — «покажи #%d»" % n["id"],
-             "voice": "🎙 голосовое"}.get(n["kind"], "")
+    image = photo_server.url(n.get("photo_token", ""))
+    if image:
+        photo = f'=IMAGE("{image}")'  # миниатюра прямо в ячейке
+    else:
+        photo = _text({"photo": "📷 есть — «покажи #%d»" % n["id"], "video": "🎬 видео — «покажи #%d»" % n["id"],
+                       "voice": "🎙 голосовое"}.get(n["kind"], ""))
     explanation = "\n".join(x for x in (n.get("summary", ""), n.get("details", "")) if x)
     comment = "\n".join(x for x in (n.get("text", ""), n.get("caption", ""), n.get("transcript", "")) if x)
-    return [n["id"], f"{n['date']} {n['time']}", n.get("project", ""), photo, explanation, comment]
+    return [n["id"], f"'{n['date']} {n['time']}", _text(n.get("project", "")), photo, _text(explanation), _text(comment)]
 
 
 def _find_row(ws, note_id):
@@ -76,9 +87,9 @@ def sync(note):
         ws = sheets._gc().open_by_key(target).sheet1
         r = _find_row(ws, note["id"])
         if r:
-            ws.update(range_name=f"A{r}:F{r}", values=[row(note)])
+            ws.update(range_name=f"A{r}:F{r}", values=[row(note)], value_input_option="USER_ENTERED")
         else:
-            ws.append_row(row(note), value_input_option="RAW", table_range="A1")
+            ws.append_row(row(note), value_input_option="USER_ENTERED", table_range="A1")
         return target
 
 

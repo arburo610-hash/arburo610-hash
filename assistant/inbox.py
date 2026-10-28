@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
+import photo_server
 import visits
 
 INBOX_DIR = os.path.join(visits.MEDIA_ROOT, "Входящие")
@@ -65,9 +66,11 @@ def add(kind, text="", path="", caption="", transcript="", frames=None, summary=
             "kind": kind, "text": text, "caption": caption, "transcript": transcript,
             "summary": summary, "details": details, "project": project, "tags": tags or [],
             "path": path, "frames": frames or [], "status": NEW,
+            "photo_token": photo_server.new_token() if kind in ("photo", "video") else "",
         }
         notes.append(note)
         _save(notes)
+    _register(note)
     _mirror(note)
     return note
 
@@ -111,10 +114,24 @@ def _mirror(note):
     notes_sheets.sync_later(note, on_done=lambda table: update([note["id"]], mirror=False, table=table))
 
 
+def _register(note):
+    """Фото (у видео — первый кадр) доступно мини-серверу по ссылке заметки."""
+    image = note["path"] if note["kind"] == "photo" else (note.get("frames") or [""])[0]
+    if note.get("photo_token") and image:
+        photo_server.register(note["photo_token"], image)
+
+
 def mirror_all():
-    """При запуске: заметки, которых ещё нет ни в одной таблице, — дописать."""
+    """При запуске: выдать ссылки старым фото, дописать в таблицы новые заметки,
+    обновить строки, если появился публичный адрес для миниатюр."""
+    base = photo_server.base_url()
     for n in _load():
-        if not n.get("table"):
+        if n["kind"] in ("photo", "video") and not n.get("photo_token"):
+            n["photo_token"] = photo_server.new_token()
+            update([n["id"]], mirror=False, photo_token=n["photo_token"])
+        _register(n)
+        if not n.get("table") or n.get("synced_base", "") != base:
+            update([n["id"]], mirror=False, synced_base=base)
             _mirror(n)
 
 

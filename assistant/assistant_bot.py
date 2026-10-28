@@ -24,6 +24,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 import drive
 import inbox
 import media
+import photo_server
 import reminders
 import sheets
 import visits
@@ -917,6 +918,7 @@ def main():
         )
 
     threading.Thread(target=media.preload, daemon=True).start()
+    photo_server.start()
     threading.Thread(target=inbox.mirror_all, daemon=True).start()
     log.info("Ассистент запущен")
     app.run_polling()
