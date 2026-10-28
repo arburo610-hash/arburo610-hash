@@ -16,3 +16,8 @@
 !bot.py
 !requirements.txt
 !голос-анастасии.md
+
+# Бизнес-ассистент (секреты не коммитим)
+!assistant/
+assistant/service_account.json
+assistant/__pycache__/
