@@ -87,7 +87,8 @@ def find_project(name):
     return None
 
 
-def read_project_section(project_name, section, only_open=True):
+def _project_sheet(project_name, section):
+    """(строка проекта из Пульта, id таблицы проекта, лист раздела)."""
     project = find_project(project_name)
     if project is None:
         names = ", ".join(p.get("Проект", "") for p in list_projects())
@@ -96,16 +97,46 @@ def read_project_section(project_name, section, only_open=True):
     if not sheet_id:
         raise ValueError(f"У проекта «{project['Проект']}» в Пульте нет ссылки на таблицу управления")
     prefix = SECTIONS[section]
+    ws = next((w for w in _gc().open_by_key(sheet_id).worksheets() if w.title.startswith(prefix)), None)
+    if ws is None:
+        raise ValueError(f"В таблице проекта нет листа «{prefix}…»")
+    return project, sheet_id, ws
 
-    def load():
-        book = _gc().open_by_key(sheet_id)
-        ws = next((w for w in book.worksheets() if w.title.startswith(prefix)), None)
-        if ws is None:
-            raise ValueError(f"В таблице проекта нет листа «{prefix}…»")
-        return _rows_as_dicts(ws.get_all_values())
 
-    records = _cached((sheet_id, section), load)
+def read_project_section(project_name, section, only_open=True):
+    project = find_project(project_name)
+    key = (project and project.get("Таблица управления"), section)
+    project, _, ws = _cached(("sheet",) + key, lambda: _project_sheet(project_name, section))
+    records = _cached(key, lambda: _rows_as_dicts(ws.get_all_values()))
     if only_open:
         records = [r for r in records
                    if r.get("Статус", r.get("Статус записи", "")).strip().lower() not in CLOSED_STATUSES]
     return {"проект": project["Проект"], "раздел": section, "записей": len(records), "записи": records}
+
+
+def append_records(project_name, section, records, id_letter=None):
+    """Дописывает записи в конец раздела, раскладывая поля по заголовкам листа.
+
+    id_letter — буква в ID раздела (T — задачи, Q — вопросы): следующий номер берётся по максимальному
+    существующему, префикс — как у остальных записей (MOD-T-021). Возвращает присвоенные ID.
+    Нужен доступ сервисного аккаунта на редактирование таблицы.
+    """
+    project, sheet_id, ws = _project_sheet(project_name, section)
+    values = ws.get_all_values()
+    header_idx = next(i for i, row in enumerate(values) if sum(1 for c in row if c.strip()) >= 3)
+    header = [h.strip() for h in values[header_idx]]
+
+    ids = []
+    if id_letter:
+        pattern = re.compile(rf"^(.*-{id_letter}-)(\d+)$")
+        found = [m for row in values[header_idx + 1:] if row and (m := pattern.match(row[0].strip()))]
+        prefix = found[0].group(1) if found else f"{id_letter}-"
+        width = len(found[0].group(2)) if found else 3
+        start = max((int(m.group(2)) for m in found), default=0) + 1
+        ids = [f"{prefix}{n:0{width}d}" for n in range(start, start + len(records))]
+        records = [{**r, "ID": i} for r, i in zip(records, ids)]
+
+    rows = [[r.get(h, "") for h in header] for r in records]
+    ws.append_rows(rows, value_input_option="USER_ENTERED", table_range=f"A{header_idx + 1}")
+    _cache.clear()
+    return ids
