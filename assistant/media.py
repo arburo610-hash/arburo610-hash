@@ -5,24 +5,53 @@
 """
 import base64
 import json
+import logging
 import os
 import shutil
 import subprocess
 
 _whisper = None
+log = logging.getLogger("assistant.media")
+
+
+last_error = ""  # почему не получилась последняя расшифровка — бот показывает это пользователю
+
+
+def _model():
+    global _whisper
+    if _whisper is None:
+        from faster_whisper import WhisperModel
+        # модель (~150 МБ) кладём в хранилище, чтобы не скачивать её заново при каждом перезапуске
+        root = os.path.join(os.environ.get("MEDIA_ROOT", "media"), "models")
+        _whisper = WhisperModel(os.environ.get("WHISPER_MODEL", "small"), device="cpu", compute_type="int8",
+                                download_root=root)
+    return _whisper
+
+
+def preload():
+    """Загружает модель заранее (в фоне при старте бота), чтобы первое голосовое не ждало скачивания."""
+    try:
+        _model()
+        log.info("Модель расшифровки готова")
+    except Exception:
+        log.exception("Модель расшифровки не загрузилась")
 
 
 def transcribe(path):
-    """Текст голосового / звуковой дорожки видео или None, если faster-whisper не установлен."""
-    global _whisper
+    """Текст голосового / звуковой дорожки видео или None, если расшифровать не удалось (причина — в last_error)."""
+    global last_error
     try:
-        from faster_whisper import WhisperModel
+        segments, _ = _model().transcribe(path, language="ru", vad_filter=True)
+        text = " ".join(s.text.strip() for s in segments).strip()
     except ImportError:
+        last_error = "не установлен faster-whisper"
         return None
-    if _whisper is None:
-        _whisper = WhisperModel(os.environ.get("WHISPER_MODEL", "small"), device="cpu", compute_type="int8")
-    segments, _ = _whisper.transcribe(path, language="ru", vad_filter=True)
-    return " ".join(s.text.strip() for s in segments).strip()
+    except Exception as e:
+        log.exception("transcribe failed")
+        last_error = f"{type(e).__name__}: {e}"[:300]
+        return None
+    last_error = "" if text else "в записи не нашлось речи"
+    return text or None
 
 
 def video_frames(path, out_dir, count=4):

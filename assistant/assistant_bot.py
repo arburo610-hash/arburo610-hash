@@ -12,6 +12,7 @@ import datetime
 import json
 import logging
 import os
+import threading
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -371,6 +372,8 @@ async def inbox_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      summary=info.summary if info else "", details=info.details if info else "",
                      project=info.project if info else "", tags=info.tags if info else [])
     answer = f"📥 Во входящих {inbox.short(note)}"
+    if kind in ("voice", "video") and not transcript:
+        answer += f"\n⚠️ Не смогла расшифровать речь ({media.last_error or 'причина неизвестна'}). Файл сохранён."
     if note["details"]:
         answer += f"\n{note['details'][:600]}"
     if not note["project"]:
@@ -413,7 +416,8 @@ async def visit_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif item.transcript:
         await msg.reply_text(f"🎙 Расшифровала: {item.transcript[:500]}")
     else:
-        await msg.reply_text("Сохранила. Расшифровка не настроена — добавьте пару слов текстом, о чём это.")
+        await msg.reply_text(f"Сохранила, но не смогла расшифровать ({media.last_error or 'причина неизвестна'}). "
+                             "Добавьте пару слов текстом, о чём это.")
 
 
 async def visit_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -638,6 +642,7 @@ def main():
             chat_id=int(brief_chat),
         )
 
+    threading.Thread(target=media.preload, daemon=True).start()
     log.info("Ассистент запущен")
     app.run_polling()
 
