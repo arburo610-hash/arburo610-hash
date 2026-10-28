@@ -163,7 +163,7 @@ def describe_media(kind, path, caption, transcript, frames):
     content = [{"type": "text", "text": (
         f"Анастасия прислала ассистенту {dict(photo='фото', video='видео', voice='голосовое')[kind]} вне выезда. "
         f"Проекты: {', '.join(project_names()) or 'список недоступен'}.\n"
-        f"Подпись: {caption or '(нет)'}\nРасшифровка речи: {transcript or '(нет)'}\n"
+        f"Подпись: {caption or '(нет)'}\nПояснение Анастасии (голосом или текстом): {transcript or '(нет)'}\n"
         "Разбери, что это. Только то, что видно или сказано, ничего не додумывай."
     )}]
     images = [path] if kind == "photo" else frames
@@ -278,6 +278,10 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         visit.items.append(visits.Item(kind="text", caption=update.message.text, time=now_hm()))
         await update.message.reply_text("📝 Записала в выезд")
         return
+    if allowed(update) and recent_photo_ids(context):
+        await context.bot.send_chat_action(update.effective_chat.id, "typing")
+        if await attach_comment(update, context, update.message.text):
+            return
     await reply(update, context, update.message.text)
 
 
@@ -366,10 +370,7 @@ async def inbox_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info = None  # заметку всё равно сохраняем, просто без подписи
 
     if kind == "voice" and transcript:
-        recent = [i for i, t in context.chat_data.get("recent_photos", []) if time.time() - t < PHOTO_COMMENT_WINDOW]
-        if recent:  # голосовое вдогонку к фото — это подпись к ним
-            context.chat_data["recent_photos"] = []
-            await attach_voice(update, context, recent, path, transcript)
+        if await attach_comment(update, context, transcript, voice_path=path):
             return
 
     if kind == "voice" and info and info.is_request and transcript:
@@ -402,16 +403,37 @@ def remember(context, user_text, answer):
     del history[:-HISTORY_TURNS * 2]
 
 
-async def attach_voice(update: Update, context: ContextTypes.DEFAULT_TYPE, note_ids, voice_path, transcript):
-    """Голосовое после фото: добавляем расшифровку к этим фото и переописываем их с учётом её слов."""
-    lines, without_project = [], False
-    for note in await asyncio.to_thread(inbox.find, status="", ids=note_ids):
+def recent_photo_ids(context):
+    return [i for i, t in context.chat_data.get("recent_photos", []) if time.time() - t < PHOTO_COMMENT_WINDOW]
+
+
+async def attach_comment(update: Update, context: ContextTypes.DEFAULT_TYPE, comment, voice_path=""):
+    """Голосовое или текст вдогонку к фото: добавляем к ним как пояснение и переописываем фото с учётом слов.
+
+    False — если недавних фото нет или это не пояснение, а вопрос к ассистенту (тогда отвечаем как обычно).
+    """
+    note_ids = recent_photo_ids(context)
+    if not note_ids:
+        return False
+    notes = await asyncio.to_thread(inbox.find, status="", ids=note_ids)
+    infos = []
+    for note in notes:
         try:
-            info = await asyncio.to_thread(describe_media, "photo", note["path"], note["caption"], transcript, [])
+            info = await asyncio.to_thread(describe_media, "photo", note["path"], note["caption"], comment, [])
         except anthropic.APIError:
             log.exception("describe failed")
             info = None
-        fields = {"transcript": f"{note['transcript']} {transcript}".strip(), "voice_path": voice_path}
+        if not infos and info and info.is_request:
+            return False  # это вопрос, а не подпись — фото продолжают ждать пояснения
+        infos.append(info)
+    context.chat_data["recent_photos"] = []
+
+    lines, without_project = [], False
+    for note, info in zip(notes, infos):
+        key = "transcript" if voice_path else "caption"
+        fields = {key: f"{note[key]} {comment}".strip()}
+        if voice_path:
+            fields["voice_path"] = voice_path
         if info:
             fields.update(summary=info.summary, details=info.details, tags=info.tags,
                           project=info.project or note["project"])
@@ -419,11 +441,13 @@ async def attach_voice(update: Update, context: ContextTypes.DEFAULT_TYPE, note_
         note.update(fields)
         without_project = without_project or not note["project"]
         lines.append(inbox.short(note) + (f"\n   {note['details'][:300]}" if note.get("details") else ""))
-    answer = f"🎙 {transcript[:500]}\n\nДобавила к фото:\n" + "\n".join(lines)
+    icon = "🎙" if voice_path else "📝"
+    answer = f"{icon} {comment[:500]}\n\nДобавила к фото:\n" + "\n".join(lines)
     if without_project:
         answer += "\n\nК какому проекту? Можно ответить словами: «это для Острова»."
     await update.message.reply_text(answer)
-    remember(context, "(прислала голосовое к фото)", answer)
+    remember(context, f"(пояснение к фото) {comment}", answer)
+    return True
 
 
 async def visit_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
