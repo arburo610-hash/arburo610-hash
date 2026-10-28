@@ -30,6 +30,7 @@ def _model():
 
 def preload():
     """Загружает модель заранее (в фоне при старте бота), чтобы первое голосовое не ждало скачивания."""
+    log.info("ffmpeg на сервере: %s", "есть" if shutil.which("ffmpeg") else "нет (звук читаю через av)")
     try:
         _model()
         log.info("Модель расшифровки готова")
@@ -38,18 +39,26 @@ def preload():
 
 
 def _load_audio(path):
-    """Звук в виде массива 16 кГц моно через ffmpeg.
+    """Звук в виде массива 16 кГц моно.
 
-    Свой декодер faster-whisper (библиотека av) ломается на новых версиях av, а ffmpeg на сервере есть всегда.
+    Свой декодер faster-whisper ломается на новых версиях библиотеки av (передаёт ей устаревший параметр),
+    поэтому читаем звук сами: через ffmpeg, если он есть, иначе через av напрямую.
     """
-    if not shutil.which("ffmpeg"):
-        return path
     import numpy as np
-    raw = subprocess.run(
-        ["ffmpeg", "-v", "quiet", "-i", path, "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
-        capture_output=True, check=True,
-    ).stdout
-    return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+    if shutil.which("ffmpeg"):
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "quiet", "-i", path, "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
+            capture_output=True, check=True,
+        ).stdout
+        return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+    import av
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+    chunks = []
+    with av.open(path) as container:
+        for frame in container.decode(audio=0):
+            chunks += [f.to_ndarray().reshape(-1) for f in resampler.resample(frame)]
+    chunks += [f.to_ndarray().reshape(-1) for f in resampler.resample(None)]
+    return np.concatenate(chunks).astype(np.float32) / 32768.0 if chunks else np.zeros(0, np.float32)
 
 
 def transcribe(path):
