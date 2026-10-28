@@ -37,11 +37,26 @@ def preload():
         log.exception("Модель расшифровки не загрузилась")
 
 
+def _load_audio(path):
+    """Звук в виде массива 16 кГц моно через ffmpeg.
+
+    Свой декодер faster-whisper (библиотека av) ломается на новых версиях av, а ffmpeg на сервере есть всегда.
+    """
+    if not shutil.which("ffmpeg"):
+        return path
+    import numpy as np
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "quiet", "-i", path, "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
+        capture_output=True, check=True,
+    ).stdout
+    return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+
+
 def transcribe(path):
     """Текст голосового / звуковой дорожки видео или None, если расшифровать не удалось (причина — в last_error)."""
     global last_error
     try:
-        segments, _ = _model().transcribe(path, language="ru", vad_filter=True)
+        segments, _ = _model().transcribe(_load_audio(path), language="ru", vad_filter=True)
         text = " ".join(s.text.strip() for s in segments).strip()
     except ImportError:
         last_error = "не установлен faster-whisper"
