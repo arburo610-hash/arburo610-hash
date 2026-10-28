@@ -8,6 +8,7 @@ import datetime
 import json
 import os
 import threading
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import visits
@@ -130,7 +131,8 @@ def add_to_calendar(r):
         body = {"start": {"date": day.isoformat()}, "end": {"date": (day + datetime.timedelta(days=1)).isoformat()}}
     body.update(summary=title, description="Добавлено бизнес-ассистентом")
     try:
-        resp = _session().post(f"https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events", json=body, timeout=30)
+        url = f"https://www.googleapis.com/calendar/v3/calendars/{quote(CALENDAR_ID, safe='')}/events"
+        resp = _session().post(url, json=body, timeout=30)
     except Exception as e:
         return f"ошибка: {e}"
     if resp.status_code >= 300:
