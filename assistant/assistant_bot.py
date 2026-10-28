@@ -23,6 +23,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 import inbox
 import media
+import reminders
 import sheets
 import visits
 
@@ -57,12 +58,20 @@ SYSTEM_PROMPT = """Ты — личный бизнес-ассистент Ана�
 - Ссылайся на ID записей (MOD-T-005, MOD-R-003), чтобы Анастасия могла быстро найти строку.
 - Пиши по-русски, коротко и по делу, удобно для чтения с телефона: сначала главное, потом детали. Без канцелярита и воды.
 - Если просят текст для заказчика или подрядчика — пиши спокойно, уважительно, по-человечески, от первого лица Анастасии.
-- Сегодня: {today}."""
+- Сегодня: {today}.
+
+Календарь и напоминания (add_reminder, list_reminders, update_reminder):
+- «запиши дату», «поставь на 3 ноября», «напомни…» → add_reminder. Даты считай от сегодняшней; если год не назван — ближайшая будущая дата.
+- «Напомни накануне» → remind_at: день до события, 10:00. «Напомни в день» или дата без уточнения → в день события, 9:00. Названо время — в это время. «Через час», «завтра утром» — считай от текущего времени.
+- Если просят напомнить, но непонятно когда, — спроси одним коротким вопросом и ничего не создавай.
+- to_calendar = true для событий с датой (поставка, получение образца, выезд, встреча, замер); false для мелких дел без события («отправить Касыму скрин»).
+- Подтверди коротко: что записала, дата события, когда напомню, добавлено ли в календарь."""
 
 BRIEF_PROMPT = """Сделай утреннюю сводку по всем проектам. Структура:
 1. 🔥 Горит — просроченные и ближайшие (на этой неделе) сроки, блокеры.
 2. ⏳ Ждём от других — что ждём от заказчиков/подрядчиков и сколько уже ждём.
 3. ✅ Мой фокус на сегодня — 3–5 конкретных шагов из задач с высоким приоритетом.
+4. 📅 Сегодня и завтра — события и напоминания (list_reminders на сегодня и завтра).
 Проекты на паузе — одной строкой в конце. Загляни в задачи и вопросы тех проектов, где есть блокеры или близкие сроки."""
 
 TOOLS = [
@@ -133,7 +142,79 @@ TOOLS = [
 ]
 
 
+TOOLS += [
+    {
+        "name": "add_reminder",
+        "description": "Записывает событие с датой и/или напоминание в Telegram; при to_calendar добавляет событие в Google Календарь.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Что: «получить образец обоев в спальню», «отправить Касыму скрин по розеткам»"},
+                "project": {"type": "string", "description": "Проект как в Пульте или пусто"},
+                "event_date": {"type": "string", "description": "Дата события ГГГГ-ММ-ДД или пусто"},
+                "event_time": {"type": "string", "description": "Время события ЧЧ:ММ или пусто"},
+                "remind_at": {"type": "string", "description": "Когда прислать напоминание: ГГГГ-ММ-ДДTЧЧ:ММ по Москве; пусто — без напоминания"},
+                "to_calendar": {"type": "boolean"},
+            },
+            "required": ["text", "project", "event_date", "event_time", "remind_at", "to_calendar"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_reminders",
+        "description": "События и напоминания за период (по дате события или напоминания).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date_from": {"type": "string", "description": "ГГГГ-ММ-ДД или пусто"},
+                "date_to": {"type": "string", "description": "ГГГГ-ММ-ДД или пусто"},
+                "include_done": {"type": "boolean"},
+            },
+            "required": ["date_from", "date_to", "include_done"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "update_reminder",
+        "description": "Перенести напоминание или отметить сделанным/отменённым.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "remind_at": {"type": "string", "description": "Новое время ГГГГ-ММ-ДДTЧЧ:ММ или пусто — не менять"},
+                "status": {"type": "string", "enum": ["", "сделано", "отменено"]},
+            },
+            "required": ["id", "remind_at", "status"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
+def today_text():
+    now = datetime.datetime.now(TZ)
+    days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    return f"{now:%Y-%m-%d} ({now:%d.%m.%Y}, {days[now.weekday()]}), сейчас {now:%H:%M} по Москве"
+
+
 def run_tool(name, args):
+    if name == "add_reminder":
+        r = reminders.add(args["text"], args.get("project", ""), args.get("event_date", ""), args.get("event_time", ""),
+                          args.get("remind_at", ""), args.get("to_calendar", False))
+        return {"записано": reminders.human(r), "напомню": r["remind_at"] or "без напоминания",
+                "календарь": r["calendar_event"] or "не добавляла"}
+    if name == "list_reminders":
+        items = reminders.find(args.get("date_from", ""), args.get("date_to", ""), args.get("include_done", False))
+        return {"найдено": len(items), "записи": items[-50:]}
+    if name == "update_reminder":
+        fields = {}
+        if args.get("remind_at"):
+            reminders.parse_dt(args["remind_at"])
+            fields.update(remind_at=args["remind_at"], status="ждёт")
+        if args.get("status"):
+            fields["status"] = args["status"]
+        r = reminders.update(args["id"], **fields)
+        return {"обновлено": reminders.human(r) if r else "не найдено"}
     if name == "list_projects":
         return sheets.list_projects()
     if name == "read_project":
@@ -184,7 +265,7 @@ def describe_media(kind, path, caption, transcript, frames):
 
 def ask_claude(history, user_text):
     """Агентный цикл: Claude сам решает, какие таблицы прочитать, и возвращает итоговый текст."""
-    system = SYSTEM_PROMPT.format(today=datetime.datetime.now(TZ).strftime("%d.%m.%Y, %A"))
+    system = SYSTEM_PROMPT.format(today=today_text())
     messages = history + [{"role": "user", "content": user_text}]
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -257,6 +338,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/входящие — что накопилось\n"
         "/разобрать МОД — собрать отчёт по заметкам проекта; /разобрать — разложить всё по проектам\n"
         "/з текст — записать заметку дословно, без обработки\n\n"
+        "Даты и напоминания — словами или голосом: «образец обоев по МОД 2 ноября, напомни накануне», "
+        "«3 ноября доставка напольных покрытий Талисман», «что у меня на неделе?».\n\n"
         "/сброс — начать разговор заново\n\n"
         "Или просто спросите: «что по ЖК МОД?», «какие решения по свету в Гранатах?», "
         "«набросай сообщение заказчице Талисмана про выезд»."
@@ -363,20 +446,20 @@ async def inbox_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         transcript = await asyncio.to_thread(media.transcribe, path) or ""
         if kind == "video":
             frames = await asyncio.to_thread(media.video_frames, path, inbox.INBOX_DIR)
-    try:
-        info = await asyncio.to_thread(describe_media, kind, path, msg.caption or "", transcript, frames)
-    except anthropic.APIError:
-        log.exception("describe failed")
-        info = None  # заметку всё равно сохраняем, просто без подписи
-
     if kind == "voice" and transcript:
+        # голосовое вдогонку к фото — подпись к ним; иначе понимаем его так же, как текст
         if await attach_comment(update, context, transcript, voice_path=path):
             return
-
-    if kind == "voice" and info and info.is_request and transcript:
-        os.remove(path)
+        await msg.reply_text(f"🎙 {transcript[:1000]}")
         await reply(update, context, transcript)
         return
+
+    info = None
+    if kind != "voice":
+        try:
+            info = await asyncio.to_thread(describe_media, kind, path, msg.caption or "", transcript, frames)
+        except anthropic.APIError:
+            log.exception("describe failed")  # заметку всё равно сохраняем, просто без подписи
 
     note = inbox.add(kind, path=path, caption=msg.caption or "", transcript=transcript, frames=frames,
                      summary=info.summary if info else "", details=info.details if info else "",
@@ -619,7 +702,7 @@ def process_visit(visit, extra_instruction):
     response = client.beta.messages.parse(
         model=MODEL,
         max_tokens=16000,
-        system=SYSTEM_PROMPT.format(today=datetime.datetime.now(TZ).strftime("%d.%m.%Y, %A")),
+        system=SYSTEM_PROMPT.format(today=today_text()),
         messages=[{"role": "user", "content": visits.build_content(visit, extra_instruction)}],
         output_format=visits.VisitResult,
         output_config={"effort": "high"},
@@ -664,6 +747,39 @@ async def visit_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"Записала в «{visit.project}» — {done}.")
 
 
+def reminder_keyboard(rid):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Сделано", callback_data=f"rem_done:{rid}"),
+        InlineKeyboardButton("⏰ Через час", callback_data=f"rem_hour:{rid}"),
+        InlineKeyboardButton("📅 Завтра", callback_data=f"rem_tomorrow:{rid}"),
+    ]])
+
+
+async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Раз в минуту: присылает наступившие напоминания."""
+    for r in await asyncio.to_thread(reminders.due):
+        await context.bot.send_message(context.job.chat_id, f"⏰ Напоминание\n{reminders.human(r)}",
+                                       reply_markup=reminder_keyboard(r["id"]))
+        await asyncio.to_thread(reminders.update, r["id"], status="отправлено")
+
+
+async def reminder_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not allowed(update):
+        return
+    action, rid = query.data.split(":")
+    now = datetime.datetime.now(TZ)
+    if action == "rem_done":
+        r = await asyncio.to_thread(reminders.update, int(rid), status="сделано")
+        await query.edit_message_text(f"✅ Сделано: {reminders.human(r)}")
+        return
+    when = now + datetime.timedelta(hours=1) if action == "rem_hour" else \
+        datetime.datetime.combine(now.date() + datetime.timedelta(days=1), datetime.time(9, 0), TZ)
+    r = await asyncio.to_thread(reminders.update, int(rid), remind_at=when.strftime("%Y-%m-%dT%H:%M"), status="ждёт")
+    await query.edit_message_text(f"Напомню {when:%d.%m в %H:%M}: {reminders.human(r)}")
+
+
 async def scheduled_brief(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     try:
@@ -695,6 +811,7 @@ def main():
     app.add_handler(CommandHandler(["sort", "razobrat"], inbox_sort))
     app.add_handler(MessageHandler(filters.Regex(r"^/разобрать"), inbox_sort))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
+    app.add_handler(CallbackQueryHandler(reminder_button, pattern=r"^rem_"))
     app.add_handler(MessageHandler(
         filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.VOICE | filters.AUDIO | filters.Document.ALL,
         visit_media,
@@ -702,6 +819,9 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
 
     brief_chat = os.environ.get("BRIEF_CHAT_ID")
+    owner_chat = brief_chat or os.environ.get("ALLOWED_TELEGRAM_IDS", "").split(",")[0].strip()
+    if owner_chat:
+        app.job_queue.run_repeating(check_reminders, interval=60, first=15, chat_id=int(owner_chat))
     if brief_chat:
         hh, mm = os.environ.get("BRIEF_TIME", "09:00").split(":")
         app.job_queue.run_daily(
