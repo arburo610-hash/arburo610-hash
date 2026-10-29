@@ -36,7 +36,7 @@ logging.getLogger("httpx2").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)  # иначе каждую минуту строка про проверку напоминаний
 log = logging.getLogger("assistant")
 
-MODEL = "claude-opus-5-5"
+MODEL = "claude-sonnet-5-5"
 TZ = ZoneInfo("Europe/Moscow")
 HISTORY_TURNS = 10  # сколько последних реплик помнить в диалоге
 PHOTO_COMMENT_WINDOW = 5 * 60  # голосовое в течение 5 минут после фото считается подписью к ним
