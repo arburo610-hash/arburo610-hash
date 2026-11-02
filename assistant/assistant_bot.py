@@ -12,12 +12,13 @@ import datetime
 import json
 import logging
 import os
+import re
 import threading
 import time
 from zoneinfo import ZoneInfo
 
 import anthropic
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -724,6 +725,41 @@ async def run_report(update: Update, context: ContextTypes.DEFAULT_TYPE, visit, 
     return True
 
 
+async def inbox_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подготовить альбом из сохранённых фото по ID, не отправляя заказчику."""
+    if not allowed(update):
+        return
+    args = command_args(update)
+    ids = list(dict.fromkeys(int(x) for x in re.findall(r"(?<!\\d)\\d+(?!\\d)", args)))
+    if not ids or len(ids) > 30:
+        await update.message.reply_text("Укажите от 1 до 30 номеров: /альбом 5 6 8")
+        return
+    records = {n["id"]: n for n in await asyncio.to_thread(inbox.find, status="", ids=ids)}
+    photos = [records[i] for i in ids if i in records and records[i].get("kind") == "photo"
+              and records[i].get("path") and os.path.isfile(records[i]["path"])]
+    missing = [i for i in ids if i not in {n["id"] for n in photos}]
+    if not photos:
+        await update.message.reply_text("Не нашла сохранённых фотографий по этим номерам.")
+        return
+    await update.message.reply_text(
+        "Предпросмотр альбома для пересылки. Ничего заказчику не отправлено.\\n"
+        + "\\n".join(f"#{n['id']}: {n.get('summary') or n.get('caption') or 'Без подписи'}" for n in photos)
+    )
+    # Telegram media groups accept 2–10 photos. Keep file handles alive until API responds.
+    for offset in range(0, len(photos), 10):
+        batch = photos[offset:offset + 10]
+        if len(batch) == 1:
+            with open(batch[0]["path"], "rb") as img:
+                await context.bot.send_photo(update.effective_chat.id, img)
+        else:
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                items = [InputMediaPhoto(media=stack.enter_context(open(n["path"], "rb"))) for n in batch]
+                await context.bot.send_media_group(update.effective_chat.id, items)
+    if missing:
+        await update.message.reply_text("Не включены (нет фото или файла): " + ", ".join(f"#{i}" for i in missing))
+
+
 # ---------- Входящие ----------
 
 async def note_quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -897,6 +933,8 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/з(\s|$)"), note_quick))
     app.add_handler(CommandHandler(["inbox", "vhodyashie"], inbox_list))
     app.add_handler(MessageHandler(filters.Regex(r"^/входящие"), inbox_list))
+    app.add_handler(MessageHandler(filters.Regex(r"^/альбом(?:\\s|$)"), inbox_album))
+    app.add_handler(CommandHandler("album", inbox_album))
     app.add_handler(CommandHandler(["sort", "razobrat"], inbox_sort))
     app.add_handler(MessageHandler(filters.Regex(r"^/разобрать"), inbox_sort))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
