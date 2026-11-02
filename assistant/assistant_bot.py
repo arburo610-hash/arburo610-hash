@@ -933,7 +933,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/з(\s|$)"), note_quick))
     app.add_handler(CommandHandler(["inbox", "vhodyashie"], inbox_list))
     app.add_handler(MessageHandler(filters.Regex(r"^/входящие"), inbox_list))
-    app.add_handler(MessageHandler(filters.Regex(r"^/альбом(?:\\s|$)"), inbox_album))
+    app.add_handler(MessageHandler(filters.Regex(r"^/альбом(?:\s|$)"), inbox_album))
     app.add_handler(CommandHandler("album", inbox_album))
     app.add_handler(CommandHandler(["sort", "razobrat"], inbox_sort))
     app.add_handler(MessageHandler(filters.Regex(r"^/разобрать"), inbox_sort))
