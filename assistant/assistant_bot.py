@@ -781,7 +781,10 @@ async def inbox_sort(update: Update, context: ContextTypes.DEFAULT_TYPE):
                    "Отчёт заказчику делай только если в заметках есть то, что ему стоит сообщить; иначе напиши в client_report "
                    "коротко, что для заказчика пока ничего нет. " + extra)
     if await run_report(update, context, visit, instruction):
-        await asyncio.to_thread(inbox.update, [n["id"] for n in notes], status=inbox.DONE)
+        await update.message.reply_text(
+            "Отчёт подготовлен. Заметки остались в статусе «новая». "
+            "Чтобы отметить выбранные записи разобранными, подтвердите это отдельно."
+        )
 
 
 def process_visit(visit, extra_instruction):
