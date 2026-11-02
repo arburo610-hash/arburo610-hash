@@ -621,6 +621,10 @@ async def attach_comment(update: Update, context: ContextTypes.DEFAULT_TYPE, com
 
 
 async def visit_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Channel posts and edited updates may have no update.message.
+    # Do not attempt to process them as private inbox messages.
+    if update.message is None:
+        return
     if not allowed(update):
         return
     visit = context.chat_data.get("visit")
