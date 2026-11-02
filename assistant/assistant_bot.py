@@ -736,7 +736,7 @@ async def client_message_draft(update: Update, context: ContextTypes.DEFAULT_TYP
             "Пример: /сообщение Для Ленинградки 24: фото #5 #6, покажи вариант обоев, коротко, без согласования."
         )
         return
-    ids = list(dict.fromkeys(int(n) for n in re.findall(r"#(\\d+)", request)))[:30]
+    ids = list(dict.fromkeys(int(n) for n in re.findall(r"#(\d+)", request)))[:30]
     notes = await asyncio.to_thread(inbox.find, status="", ids=ids) if ids else []
     by_id = {n["id"]: n for n in notes}
     context_lines = []
@@ -768,7 +768,7 @@ async def inbox_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         return
     args = command_args(update)
-    ids = list(dict.fromkeys(int(x) for x in re.findall(r"(?<!\\d)\\d+(?!\\d)", args)))
+    ids = list(dict.fromkeys(int(x) for x in re.findall(r"(?<!\d)\d+(?!\d)", args)))
     if not ids or len(ids) > 30:
         await update.message.reply_text("Укажите от 1 до 30 номеров: /альбом 5 6 8")
         return
