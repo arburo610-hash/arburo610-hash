@@ -1,7 +1,8 @@
-"""Зеркало «Входящих» в Google Таблицах: «Заметки | ЖК МОД» в папке каждого проекта, «Заметки | Входящие» — без проекта.
+"""Единый журнал «Заметки | Входящие» в Google Таблицах.
 
-Столбцы: № | Дата | Проект | Фото | Пояснение | Комментарий. Источник правды — заметки.jsonl,
-таблица обновляется следом: новая заметка → строка, сменился проект → строка переезжает в другую таблицу.
+Все новые записи попадают в один журнал независимо от предполагаемого проекта.
+Оригинал и статус остаются в заметки.jsonl; существующие проектные таблицы
+не переносятся массово при запуске.
 """
 import logging
 import re
@@ -37,13 +38,8 @@ def tables():
 
 
 def table_for(project):
-    known = tables()
-    key = _key(project or "")
-    if key:
-        for table_key, table_id in known.items():
-            if table_key != INBOX_KEY and (table_key in key or key in table_key):
-                return table_id
-    return known.get(INBOX_KEY)
+    """Единая таблица для заметок независимо от предполагаемого проекта."""
+    return tables().get(INBOX_KEY)
 
 
 def _text(value):
@@ -72,24 +68,21 @@ def _find_row(ws, note_id):
 
 
 def sync(note):
-    """Кладёт заметку в таблицу её проекта (или во «Входящие»), убирая из прежней. Возвращает id таблицы."""
+    """Синхронизирует запись в общий журнал. Старую строку удаляет лишь после успешной записи."""
     with _lock:
         target = table_for(note.get("project", ""))
         if not target:
             log.warning("нет таблицы «%s Входящие» — заметка #%s только в боте", PREFIX, note["id"])
             return None
         old = note.get("table")
-        if old and old != target:
-            ws_old = sheets._gc().open_by_key(old).sheet1
-            r = _find_row(ws_old, note["id"])
-            if r:
-                ws_old.delete_rows(r)
         ws = sheets._gc().open_by_key(target).sheet1
         r = _find_row(ws, note["id"])
         if r:
             ws.update(range_name=f"A{r}:F{r}", values=[row(note)], value_input_option="USER_ENTERED")
         else:
             ws.append_row(row(note), value_input_option="USER_ENTERED", table_range="A1")
+        # Существующие строки в старых таблицах оставляем как архив:
+        # не удаляем пользовательские данные без отдельной миграции.
         return target
 
 
