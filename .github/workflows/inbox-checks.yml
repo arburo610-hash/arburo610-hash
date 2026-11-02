@@ -1,0 +1,21 @@
+name: Inbox offline checks
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/secure-inbox-photos
+    paths:
+      - 'assistant/**/*.py'
+      - '.github/workflows/inbox-checks.yml'
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check Python syntax and inbox safety rules
+        run: python -m unittest discover -s assistant/tests -v
