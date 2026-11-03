@@ -6,6 +6,7 @@ Design principles:
 - no speculative dates or automatic closure of an act;
 - read-back verification; never claim success when Google did not persist changes.
 """
+import os
 from typing import Literal
 from pydantic import BaseModel, Field
 
@@ -26,11 +27,10 @@ class Proposal(BaseModel):
     unresolved: list[str] = Field(default_factory=list)
 
 ALLOWED_FIELDS = {
-    "этапы": {"Статус этапа", "Статус", "Блокер / примечание", "Следующий шаг"},
+    "этапы": {"Блокер / примечание", "Следующий шаг"},
     "задачи": {"Статус", "Следующий шаг", "Зависит от / ожидаем"},
 }
-# Status of stage and legally significant facts must not be changed automatically.
-SENSITIVE = {"Статус этапа", "Статус"}
+# Статусы этапов и юридически значимые поля требуют отдельной схемы согласования.
 
 
 def context_for(project_name):
@@ -79,6 +79,14 @@ def validate(proposal: Proposal):
 
 
 def apply(proposal: Proposal):
+    # Even if writes are enabled, only an explicitly allowlisted TEST copy may be changed.
+    allowlist = {x.strip() for x in os.environ.get("PROJECT_UPDATE_TEST_SHEET_IDS", "").split(",") if x.strip()}
+    project = sheets.find_project(proposal.project)
+    spreadsheet_id = sheets._spreadsheet_id((project or {}).get("Таблица управления", ""))
+    if not spreadsheet_id or spreadsheet_id not in allowlist:
+        raise PermissionError("Запись запрещена: проектная таблица не внесена в список тестовых копий")
+    if spreadsheet_id == "1SzBEU99reXbf_hOFhCxXDbamhTGArsMNkCqcWRfvsw4":
+        raise PermissionError("Запись в рабочую таблицу ЖК МОД запрещена в пилоте")
     # No blind bulk replacement. Stop on conflict and report what was already written.
     changed = []
     for patch in proposal.patches:
