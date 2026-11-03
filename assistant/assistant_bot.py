@@ -29,6 +29,7 @@ import drive
 import inbox
 import media
 import photo_server
+import project_updates
 import reminders
 import sheets
 import visits
@@ -413,6 +414,112 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await attach_comment(update, context, update.message.text):
             return
     await reply(update, context, update.message.text)
+
+
+# ---------- Актуализация проекта: только после просмотра и подтверждения ----------
+
+async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        return
+    request = command_args(update)
+    if "|" not in request:
+        await update.message.reply_text(
+            "Формат: /обновить МОД | что произошло, что выполнено и что необходимо сделать")
+        return
+    project, facts = (part.strip() for part in request.split("|", 1))
+    if not project or not facts:
+        await update.message.reply_text("Укажите проект и фактические изменения после символа |.")
+        return
+    await context.bot.send_chat_action(update.effective_chat.id, "typing")
+    try:
+        current = await asyncio.to_thread(project_updates.context_for, project)
+        instruction = (
+            "Ты готовишь ТОЛЬКО проект точечных правок Google Sheets. "
+            "Используй название проекта и ТОЛЬКО существующие ID задач/этапов. "
+            "Не добавляй и не удаляй строки, не меняй суммы, даты, авансы, акты, "
+            "не выдавай выполнение работ за документальное закрытие. "
+            "Не заменяй утверждённые клиентом решения. "
+            "Выбирай только столбцы: в этапах — «Статус этапа», «Статус», "
+            "«Блокер / примечание», «Следующий шаг»; в задачах — «Статус», "
+            "«Следующий шаг», «Зависит от / ожидаем». "
+            "Поле expected должно в точности соответствовать исходной ячейке; "
+            "если значение не видно или оно неясно, оставь вопрос в unresolved, "
+            "не предлагай правку. Если задача новая, добавь её только в unresolved. "
+            "Не меняй Пульт, не делай юридических выводов по актам. "
+            "Верни только строго структурированные поля. "
+        )
+        parsed = await asyncio.to_thread(
+            gpt_backend.parse_content,
+            [{"type": "text", "text": instruction
+              + "\\nПроектный контекст: " + json.dumps(current, ensure_ascii=False)
+              + "\\nНовое сообщение дизайнера: " + facts}],
+            project_updates.Proposal)
+        if parsed is None:
+            await update.message.reply_text("Не удалось извлечь изменения. Ничего не записано.")
+            return
+        parsed.project = current["проект"]
+        if parsed.patches:
+            await asyncio.to_thread(project_updates.validate, parsed)
+        context.chat_data["pending_project_update"] = parsed
+    except Exception as e:
+        log.exception("project update draft failed")
+        await update.message.reply_text(
+            "Не удалось подготовить правки: " + str(e)[:800] + "\\nНичего не изменено.")
+        return
+
+    lines = ["Предложение для " + parsed.project + ":", parsed.summary]
+    for i, patch in enumerate(parsed.patches, 1):
+        lines.append(
+            f"{i}. {patch.section} #{patch.record_id}, {patch.column}: "
+            f"«{patch.expected[:100]}» → «{patch.value[:180]}»"
+            + (f" ({patch.reason[:90]})" if patch.reason else ""))
+    if parsed.unresolved:
+        lines.append("Уточнить / внести отдельной задачей:")
+        lines.extend("• " + x[:230] for x in parsed.unresolved)
+    if not parsed.patches:
+        lines.append("Нет однозначных точечных изменений. Ничего не записано.")
+        context.chat_data.pop("pending_project_update", None)
+        await send_long(context.bot, update.effective_chat.id, "\\n".join(lines))
+        return
+    await send_long(context.bot, update.effective_chat.id, "\\n".join(lines))
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Подтвердить изменения", callback_data="project_apply"),
+        InlineKeyboardButton("Отменить", callback_data="project_cancel")
+    ]])
+    await update.message.reply_text(
+        "Это черновик. Изменения в таблице НЕ сохранены. Подтверждение применяется только "
+        "к перечисленным существующим ячейкам. Пульт пока не синхронизируется автоматически.",
+        reply_markup=kb)
+
+
+async def project_update_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not allowed(update):
+        return
+    proposal = context.chat_data.pop("pending_project_update", None)
+    if not proposal:
+        await query.edit_message_text("Предложение устарело. Подготовьте новое через /обновить.")
+        return
+    if query.data == "project_cancel":
+        await query.edit_message_text("Отменено. Ничего не записано.")
+        return
+    if os.environ.get("PROJECT_UPDATES_ENABLED", "false").lower() != "true":
+        await query.edit_message_text(
+            "Запись отключена в тестовой конфигурации. "
+            "Для испытаний понадобится тестовая копия таблицы и явное включение записи. "
+            "Исходные таблицы не изменены.")
+        return
+    try:
+        changed = await asyncio.to_thread(project_updates.apply, proposal)
+        await query.edit_message_text(
+            "Google Sheets подтвердил обновление: " + ", ".join(changed)
+            + ". Пульт не синхронизирован — пока это отдельная задача.")
+    except Exception as e:
+        log.exception("project update apply failed")
+        await query.edit_message_text(
+            "Не удалось завершить запись: " + str(e)[:900]
+            + "\\nПроверьте таблицу перед повторной попыткой.")
 
 
 # ---------- Режим выезда ----------
@@ -931,6 +1038,9 @@ def main():
     app.add_handler(CommandHandler("message", client_message_draft))
     app.add_handler(CommandHandler(["sort", "razobrat"], inbox_sort))
     app.add_handler(MessageHandler(filters.Regex(r"^/разобрать"), inbox_sort))
+    app.add_handler(MessageHandler(filters.Regex(r"^/обновить(?:\\s|$)"), project_update_draft))
+    app.add_handler(CommandHandler("update_project", project_update_draft))
+    app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel)$"))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
     app.add_handler(CallbackQueryHandler(reminder_button, pattern=r"^rem_"))
     app.add_handler(MessageHandler(
