@@ -352,8 +352,8 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: s
     try:
         answer = await asyncio.to_thread(ask_claude, history, user_text)
     except openai.APIError as e:
-        log.exception("Claude API error")
-        await update.message.reply_text(f"Ошибка обращения к Claude: {e}")
+        log.exception("OpenAI API error")
+        await update.message.reply_text(f"Ошибка обращения к OpenAI API: {e}")
         return
     history += [{"role": "user", "content": user_text}, {"role": "assistant", "content": answer}]
     del history[:-HISTORY_TURNS * 2]
@@ -1038,7 +1038,7 @@ def main():
     app.add_handler(CommandHandler("message", client_message_draft))
     app.add_handler(CommandHandler(["sort", "razobrat"], inbox_sort))
     app.add_handler(MessageHandler(filters.Regex(r"^/разобрать"), inbox_sort))
-    app.add_handler(MessageHandler(filters.Regex(r"^/обновить(?:\\s|$)"), project_update_draft))
+    app.add_handler(MessageHandler(filters.Regex(r"^/обновить(?:\s|$)"), project_update_draft))
     app.add_handler(CommandHandler("update_project", project_update_draft))
     app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel)$"))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
