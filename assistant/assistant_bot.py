@@ -351,9 +351,9 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: s
     history = context.chat_data.setdefault("history", [])
     try:
         answer = await asyncio.to_thread(ask_claude, history, user_text)
-    except openai.APIError as e:
-        log.exception("OpenAI API error")
-        await update.message.reply_text(f"Ошибка обращения к OpenAI API: {e}")
+    except (openai.APIError, RuntimeError) as e:
+        log.exception("OpenAI service unavailable")
+        await update.message.reply_text(f"GPT сейчас недоступен: {str(e)[:300]}")
         return
     history += [{"role": "user", "content": user_text}, {"role": "assistant", "content": answer}]
     del history[:-HISTORY_TURNS * 2]
@@ -612,7 +612,7 @@ async def inbox_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if kind != "voice":
         try:
             info = await asyncio.to_thread(describe_media, kind, path, msg.caption or "", transcript, frames)
-        except openai.APIError:
+        except (openai.APIError, RuntimeError):
             log.exception("describe failed")  # заметку всё равно сохраняем, просто без подписи
 
     note = inbox.add(kind, path=path, caption=msg.caption or "", transcript=transcript, frames=frames,
@@ -1008,8 +1008,8 @@ async def scheduled_brief(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     try:
         answer = await asyncio.to_thread(ask_claude, [], BRIEF_PROMPT)
-    except openai.APIError as e:
-        answer = f"Утренняя сводка не собралась: {e}"
+    except (openai.APIError, RuntimeError) as e:
+        answer = f"Утренняя сводка не собралась: {str(e)[:300]}"
     await send_long(context.bot, chat_id, "Доброе утро! " + answer)
 
 
