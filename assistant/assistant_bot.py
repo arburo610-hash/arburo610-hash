@@ -17,7 +17,10 @@ import threading
 import time
 from zoneinfo import ZoneInfo
 
-import anthropic
+import openai
+from pydantic import BaseModel, Field
+
+import gpt_backend
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
@@ -37,13 +40,12 @@ logging.getLogger("httpx2").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)  # иначе каждую минуту строка про проверку напоминаний
 log = logging.getLogger("assistant")
 
-MODEL = "claude-sonnet-5-5"
+MODEL = gpt_backend.MODEL
 TZ = ZoneInfo("Europe/Moscow")
 HISTORY_TURNS = 10  # сколько последних реплик помнить в диалоге
 PHOTO_COMMENT_WINDOW = 5 * 60  # голосовое в течение 5 минут после фото считается подписью к ним
 MAX_TOOL_ROUNDS = 12
 
-client = anthropic.Anthropic()
 
 SYSTEM_PROMPT = """Ты — личный бизнес-ассистент Анастасии Рожковой, дизайнера интерьеров (полный цикл жилого интерьера, ведёт проекты лично; в работе ArchiCAD, 3ds Max, Photoshop).
 
@@ -57,7 +59,7 @@ SYSTEM_PROMPT = """Ты — личный бизнес-ассистент Ана�
 - Если сообщение — это информация, которую надо запомнить (артикул, размер, контакт, «понравилось…», «зафиксируй…»), а не вопрос, — сохрани её через save_note и коротко подтверди: что записала и к какому проекту. Ничего больше не делай.
 - Проект указывай, только если он назван или очевиден. Заметка может относиться не к тому проекту, на котором она сейчас («была на МОД, увидела обои для Острова» — это Остров).
 - На вопросы «что я сохраняла…», «какие обои для Острова…» отвечай по list_notes, с номерами заметок (#12).
-- Каждая заметка автоматически записывается строкой в таблицу «Заметки | <проект>» в папке проекта (без проекта — в «Заметки | Входящие»); при смене проекта строка переезжает сама.
+- Каждая новая заметка записывается в единые «Заметки | Входящие»; предполагаемый проект фиксируется как метаданные, до подтверждения ничего не переносится.
 - «Покажи #12», «пришли фото по обоям для Острова» → send_note_media с номерами заметок: файлы придут в чат следом за ответом.
 
 Правила:
@@ -321,55 +323,13 @@ def describe_media(kind, path, caption, transcript, frames):
     )}]
     images = [path] if kind == "photo" else frames
     content += [media.image_block(p) for p in images[:4]]
-    response = client.beta.messages.parse(
-        model=MODEL,
-        max_tokens=4000,
-        messages=[{"role": "user", "content": content}],
-        output_format=inbox.MediaNote,
-        output_config={"effort": "low"},
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-    )
-    if response.stop_reason == "refusal":
-        return None
-    return response.parsed_output
+    return gpt_backend.parse_content(content, inbox.MediaNote)
 
 
 def ask_claude(history, user_text):
-    """Агентный цикл: Claude сам решает, какие таблицы прочитать, и возвращает итоговый текст."""
-    system = SYSTEM_PROMPT.format(today=today_text())
-    messages = history + [{"role": "user", "content": user_text}]
-
-    for _ in range(MAX_TOOL_ROUNDS):
-        response = client.beta.messages.create(
-            model=MODEL,
-            max_tokens=16000,
-            system=system,
-            tools=TOOLS,
-            messages=messages,
-            output_config={"effort": "medium"},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-        )
-        if response.stop_reason == "refusal":
-            return "Не получилось ответить на этот запрос — попробуйте сформулировать иначе."
-        if response.stop_reason != "tool_use":
-            return "\n".join(b.text for b in response.content if b.type == "text").strip() or "(пустой ответ)"
-
-        messages.append({"role": "assistant", "content": response.content})
-        results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
-            try:
-                content = json.dumps(run_tool(block.name, block.input), ensure_ascii=False)
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
-            except Exception as e:  # ошибку отдаём модели — она объяснит или попробует иначе
-                log.exception("tool %s failed", block.name)
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(e), "is_error": True})
-        messages.append({"role": "user", "content": results})
-
-    return "Запрос оказался слишком длинным — уточните, по какому проекту смотреть."
+    """Совместимое имя для GPT-агента; история хранится в Telegram-процессе."""
+    return gpt_backend.ask(history, user_text, SYSTEM_PROMPT.format(today=today_text()),
+                           TOOLS, run_tool, max_rounds=MAX_TOOL_ROUNDS)
 
 
 def allowed(update: Update) -> bool:
@@ -390,7 +350,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: s
     history = context.chat_data.setdefault("history", [])
     try:
         answer = await asyncio.to_thread(ask_claude, history, user_text)
-    except anthropic.APIError as e:
+    except openai.APIError as e:
         log.exception("Claude API error")
         await update.message.reply_text(f"Ошибка обращения к Claude: {e}")
         return
@@ -545,7 +505,7 @@ async def inbox_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if kind != "voice":
         try:
             info = await asyncio.to_thread(describe_media, kind, path, msg.caption or "", transcript, frames)
-        except anthropic.APIError:
+        except openai.APIError:
             log.exception("describe failed")  # заметку всё равно сохраняем, просто без подписи
 
     note = inbox.add(kind, path=path, caption=msg.caption or "", transcript=transcript, frames=frames,
@@ -590,7 +550,7 @@ async def attach_comment(update: Update, context: ContextTypes.DEFAULT_TYPE, com
     for note in notes:
         try:
             info = await asyncio.to_thread(describe_media, "photo", note["path"], note["caption"], comment, [])
-        except anthropic.APIError:
+        except openai.APIError:
             log.exception("describe failed")
             info = None
         if not infos and info and info.is_request:
@@ -866,19 +826,9 @@ async def inbox_sort(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def process_visit(visit, extra_instruction):
-    response = client.beta.messages.parse(
-        model=MODEL,
-        max_tokens=16000,
-        system=SYSTEM_PROMPT.format(today=today_text()),
-        messages=[{"role": "user", "content": visits.build_content(visit, extra_instruction)}],
-        output_format=visits.VisitResult,
-        output_config={"effort": "high"},
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-    )
-    if response.stop_reason == "refusal":
-        return None
-    return response.parsed_output
+    return gpt_backend.parse_content(
+        visits.build_content(visit, extra_instruction), visits.VisitResult,
+        instructions=SYSTEM_PROMPT.format(today=today_text()))
 
 
 async def visit_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -951,7 +901,7 @@ async def scheduled_brief(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     try:
         answer = await asyncio.to_thread(ask_claude, [], BRIEF_PROMPT)
-    except anthropic.APIError as e:
+    except openai.APIError as e:
         answer = f"Утренняя сводка не собралась: {e}"
     await send_long(context.bot, chat_id, "Доброе утро! " + answer)
 
