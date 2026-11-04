@@ -92,13 +92,34 @@ def find_project(name):
     return None
 
 
+
+def _test_override_id(project):
+    """Redirect a named project to a test copy, without editing the Pult."""
+    raw = os.environ.get("TEST_PROJECT_SHEET_OVERRIDES_JSON", "")
+    if not raw:
+        return None
+    mapping = json.loads(raw)
+    if not isinstance(mapping, dict):
+        raise ValueError("TEST_PROJECT_SHEET_OVERRIDES_JSON должен быть JSON-объектом")
+    return mapping.get(project.get("Проект", ""))
+
+
+def _assert_test_write_allowed(sheet_id):
+    """Pilot writes only: both explicit enablement and a test-copy allowlist."""
+    if os.environ.get("PROJECT_UPDATES_ENABLED", "false").lower() != "true":
+        raise PermissionError("Запись тестового ассистента отключена")
+    allowed = {x.strip() for x in os.environ.get("PROJECT_UPDATE_TEST_SHEET_IDS", "").split(",") if x.strip()}
+    redirects = json.loads(os.environ.get("TEST_PROJECT_SHEET_OVERRIDES_JSON", "{}"))
+    if sheet_id not in allowed or sheet_id not in redirects.values():
+        raise PermissionError("Запись разрешена только в тестовую копию")
+
 def _project_sheet(project_name, section):
     """(строка проекта из Пульта, id таблицы проекта, лист раздела)."""
     project = find_project(project_name)
     if project is None:
         names = ", ".join(p.get("Проект", "") for p in list_projects())
         raise ValueError(f"Проект «{project_name}» не найден в Пульте. Есть: {names}")
-    sheet_id = _spreadsheet_id(project.get("Таблица управления"))
+    sheet_id = _test_override_id(project) or _spreadsheet_id(project.get("Таблица управления"))
     if not sheet_id:
         raise ValueError(f"У проекта «{project['Проект']}» в Пульте нет ссылки на таблицу управления")
     prefix = SECTIONS[section]
@@ -110,7 +131,7 @@ def _project_sheet(project_name, section):
 
 def read_project_section(project_name, section, only_open=True):
     project = find_project(project_name)
-    key = (project and project.get("Таблица управления"), section)
+    key = (project and (_test_override_id(project) or project.get("Таблица управления")), section)
     project, _, ws = _cached(("sheet",) + key, lambda: _project_sheet(project_name, section))
     records = _cached(key, lambda: _rows_as_dicts(ws.get_all_values()))
     if only_open:
@@ -127,6 +148,7 @@ def append_records(project_name, section, records, id_letter=None):
     Нужен доступ сервисного аккаунта на редактирование таблицы.
     """
     project, sheet_id, ws = _project_sheet(project_name, section)
+    _assert_test_write_allowed(sheet_id)
     values = ws.get_all_values()
     header_idx = next(i for i, row in enumerate(values) if sum(1 for c in row if c.strip()) >= 3)
     header = [h.strip() for h in values[header_idx]]
