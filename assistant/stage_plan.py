@@ -117,12 +117,17 @@ def _gantt_row(ws, stage, stage_name):
 
 
 def _gantt_marks(ws, start, end):
-    head = ws.row_values(3)
-    if len(head) < 27:
+    # Use Google Sheets underlying date serials, never infer the year from
+    # the displayed dd.MM header (the visible period crosses New Year).
+    dates = ws.get("N3:AA3", value_render_option="UNFORMATTED_VALUE")
+    if not dates or len(dates[0]) != 14:
         raise ValueError("В Ганте нет полной недельной шкалы")
+    origin = datetime.date(1899, 12, 30)
     marks = []
-    for value in head[13:27]:
-        monday = parse_date(value + ".2026") if re.fullmatch(r"\d{2}\.\d{2}", value) else parse_date(value)
+    for value in dates[0]:
+        if not isinstance(value, (int, float)):
+            raise ValueError("Заголовки Ганта не содержат дат")
+        monday = origin + datetime.timedelta(days=int(value))
         sunday = monday + datetime.timedelta(days=6)
         marks.append("■" if monday <= end and sunday >= start else "")
     return marks
