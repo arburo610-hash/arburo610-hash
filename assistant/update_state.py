@@ -46,7 +46,8 @@ def start(chat_id, message_id, project, source_text):
     with _LOCK, _connect() as db:
         db.execute("INSERT OR IGNORE INTO updates(key,chat_id,message_id,project,source_text,state,updated_at) VALUES (?,?,?,?,?,?,?)",
                    (key, chat_id, message_id, project, source_text, "received", _now()))
-        return get(key)
+    # Read only after the insertion transaction commits.
+    return get(key)
 
 
 def get(key):
