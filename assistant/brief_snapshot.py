@@ -25,7 +25,7 @@ INACTIVE = {"завершён", "завершен", "архив — на пау�
 def _parse_due_window(value):
     """Return a date window only for unambiguous explicit dates."""
     raw = str(value or "").strip()
-    single = re.fullmatch(r"(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})", raw)
+    single = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", raw)
     if single:
         try:
             date = datetime.date(int(single[3]), int(single[2]), int(single[1]))
@@ -33,7 +33,7 @@ def _parse_due_window(value):
         except ValueError:
             return None
     window = re.fullmatch(
-        r"(\\d{1,2})\\.(\\d{1,2})\\s*[–—-]\\s*(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})",
+        r"(\d{1,2})\.(\d{1,2})\s*[–—-]\s*(\d{1,2})\.(\d{1,2})\.(\d{4})",
         raw
     )
     if window:
@@ -53,7 +53,7 @@ def _annotate_task(row, today):
     result = dict(row)
     due = _parse_due_window(row.get("Срок", ""))
     text = str(row.get("Следующий шаг", ""))
-    stale_words = bool(re.search(r"\\b(сегодня|завтра|послезавтра)\\b", text, flags=re.I))
+    stale_words = bool(re.search(r"\b(сегодня|завтра|послезавтра)\b", text, flags=re.I))
     if due is None:
         state = "Нет однозначной даты: НЕ подтверждено как задача на сегодня"
         confirmed_today = False
