@@ -11,6 +11,22 @@ import gspread
 
 PULT_ID = os.environ.get("PULT_SPREADSHEET_ID", "1U36B8N-5Su94kX6FSMq4Xmxw7dOngygdSd9Dpi73yjk")
 PULT_SHEET = "Проекты"
+# A test pilot may use a separate read-only Pult view. The exact copy is pinned
+# so an incorrect environment value cannot quietly redirect the assistant.
+PILOT_TEST_PULT_ID = "1a5ZQWEG6EB576NO8XYxXZ2zMTvYY8p4XYSbctQayF6M"
+
+
+def _pult_read_id():
+    configured = os.environ.get("TEST_PULT_SPREADSHEET_ID", "").strip()
+    if not configured:
+        return PULT_ID
+    if configured != PILOT_TEST_PULT_ID or configured == PULT_ID:
+        raise PermissionError("Тестовый Пульт указан неверно: чтение рабочего Пульта вместо тестового запрещено")
+    return configured
+
+
+def pult_read_source():
+    return "ТЕСТОВЫЙ Пульт" if _pult_read_id() == PILOT_TEST_PULT_ID else "Рабочий Пульт"
 
 # Разделы таблицы проекта: короткое имя -> префикс названия листа
 SECTIONS = {
@@ -72,10 +88,11 @@ def _rows_as_dicts(values):
 
 def list_projects():
     """Строки «Пульта»: проект, статус, этап, ближайший срок, счётчики, ссылка на таблицу управления."""
+    source_id = _pult_read_id()
     def load():
-        ws = _gc().open_by_key(PULT_ID).worksheet(PULT_SHEET)
+        ws = _gc().open_by_key(source_id).worksheet(PULT_SHEET)
         return _rows_as_dicts(ws.get_all_values())
-    return _cached("pult", load)
+    return _cached(("pult", source_id), load)
 
 
 def _spreadsheet_id(url):
