@@ -70,6 +70,40 @@ def inspect_patch(project_name, patch: Patch):
     return ws, index + 1, column + 1
 
 
+def prepare(proposal: Proposal):
+    """Keep independently safe edits; turn forbidden/conflicting edits into review items.
+
+    Called when drafting, never writes to Google Sheets.
+    """
+    accepted = []
+    rejected = []
+    duplicate = set()
+    for patch in proposal.patches:
+        key = (patch.section, patch.record_id, patch.column)
+        if key in duplicate:
+            rejected.append(f"{patch.section} #{patch.record_id}: повторная правка «{patch.column}» — проверить вручную")
+            continue
+        duplicate.add(key)
+        if patch.column not in ALLOWED_FIELDS[patch.section]:
+            rejected.append(
+                f"{patch.section} #{patch.record_id}: изменение «{patch.column}» "
+                f"с «{patch.expected}» на «{patch.value}» требует отдельного согласования; "
+                "автоматическая запись запрещена"
+            )
+            continue
+        try:
+            inspect_patch(proposal.project, patch)
+            accepted.append(patch)
+        except (ValueError, KeyError) as exc:
+            rejected.append(
+                f"{patch.section} #{patch.record_id}, «{patch.column}»: "
+                f"не подготовлено к записи ({exc})"
+            )
+    proposal.patches = accepted
+    proposal.unresolved.extend(rejected)
+    return proposal
+
+
 def validate(proposal: Proposal):
     if not proposal.patches:
         raise ValueError("Нет конкретных изменений для записи")
