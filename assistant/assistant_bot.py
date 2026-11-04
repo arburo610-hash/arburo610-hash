@@ -30,6 +30,7 @@ import inbox
 import media
 import photo_server
 import project_updates
+import update_state
 import reminders
 import sheets
 import visits
@@ -447,6 +448,23 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
     if not project or not facts:
         await update.message.reply_text("Укажите проект и фактические изменения после символа |.")
         return
+    request_key = f"{update.effective_chat.id}:{update.message.message_id}"
+    try:
+        saved = await asyncio.to_thread(
+            update_state.start, update.effective_chat.id, update.message.message_id, project, facts)
+        if saved["state"] != "received":
+            await update.message.reply_text(
+                "Этот запрос уже обработан или требует проверки. "
+                "Отправь /статус_обновления для просмотра результата."
+            )
+            return
+    except Exception:
+        log.exception("Could not persist project update before processing")
+        await update.message.reply_text(
+            "Не могу надёжно сохранить запрос. Ничего не изменено; "
+            "проверь хранилище тестового Railway."
+        )
+        return
     await update.message.reply_text(
         "Приняла обновление по проекту. Проверяю существующие записи и готовлю "
         "предложение. Пока ничего в таблицы не записываю."
@@ -541,9 +559,17 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
         if parsed.patches or parsed.new_tasks:
             await asyncio.to_thread(project_updates.validate, parsed)
             context.chat_data["pending_project_update"] = parsed
+            await asyncio.to_thread(
+                update_state.save, request_key, "ready", parsed.model_dump_json()
+            )
         else:
             context.chat_data.pop("pending_project_update", None)
+            await asyncio.to_thread(
+                update_state.save, request_key, "review", parsed.model_dump_json(),
+                "Недостаточно однозначных записей для изменения"
+            )
     except asyncio.TimeoutError:
+        await asyncio.to_thread(update_state.save, request_key, "failed", detail="Превышено время обработки")
         log.warning("project update timed out for project %s", project)
         await update.message.reply_text(
             "Не удалось завершить проверку за установленное время. "
@@ -551,6 +577,7 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
     except Exception as e:
+        await asyncio.to_thread(update_state.save, request_key, "failed", detail=str(e))
         log.exception("project update draft failed")
         await update.message.reply_text(
             "Не удалось подготовить правки: " + str(e)[:800] + "\\nНичего не изменено.")
@@ -575,8 +602,8 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     await send_long(context.bot, update.effective_chat.id, "\\n".join(lines))
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Подтвердить изменения", callback_data="project_apply"),
-        InlineKeyboardButton("Отменить", callback_data="project_cancel")
+        InlineKeyboardButton("Подтвердить изменения", callback_data=f"project_apply:{update.message.message_id}"),
+        InlineKeyboardButton("Отменить", callback_data=f"project_cancel:{update.message.message_id}")
     ]])
     await update.message.reply_text(
         "Это черновик. Изменения в таблице НЕ сохранены. Подтверждение применяется только "
@@ -584,34 +611,78 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=kb)
 
 
+async def project_update_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        return
+    saved = await asyncio.to_thread(update_state.latest, update.effective_chat.id)
+    if not saved:
+        await update.message.reply_text("Нет сохранённых запросов /обновить.")
+        return
+    state_labels = {
+        "received": "Получен, но результат не зафиксирован",
+        "ready": "Черновик готов, ожидает подтверждения",
+        "review": "Нужны уточнения, без записи",
+        "failed": "Обработка завершилась ошибкой, без автоматической записи",
+        "cancelled": "Отменён",
+        "applying": "Запись начата; результат требует проверки вручную",
+        "needs_review": "Запись прервана; проверь таблицу и журнал перед повтором",
+        "applied": "Сохранён и проверен",
+    }
+    await update.message.reply_text(
+        f"Последний запрос по {saved['project']}: "
+        f"{state_labels.get(saved['state'], saved['state'])}. "
+        f"Обновление: {saved['updated_at']}. "
+        + (f"Детали: {saved['detail'][:300]}" if saved["detail"] else "")
+    )
+
+
 async def project_update_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not allowed(update):
         return
-    proposal = context.chat_data.pop("pending_project_update", None)
-    if not proposal:
-        await query.edit_message_text("Предложение устарело. Подготовьте новое через /обновить.")
+    try:
+        action, message_id = query.data.split(":", 1)
+        request_key = f"{update.effective_chat.id}:{int(message_id)}"
+    except (ValueError, AttributeError):
+        await query.edit_message_text("Устаревшая кнопка. Подготовь новый запрос /обновить.")
         return
-    if query.data == "project_cancel":
+    saved = await asyncio.to_thread(update_state.get, request_key)
+    if not saved or saved["state"] != "ready":
+        await query.edit_message_text(
+            "Запрос уже завершён, отменён или требует ручной проверки. "
+            "Ничего повторно не записано. /статус_обновления"
+        )
+        return
+    if action == "project_cancel":
+        await asyncio.to_thread(update_state.save, request_key, "cancelled")
+        context.chat_data.pop("pending_project_update", None)
         await query.edit_message_text("Отменено. Ничего не записано.")
         return
     if os.environ.get("PROJECT_UPDATES_ENABLED", "false").lower() != "true":
         await query.edit_message_text(
             "Запись отключена в тестовой конфигурации. "
-            "Для испытаний понадобится тестовая копия таблицы и явное включение записи. "
-            "Исходные таблицы не изменены.")
+            "Черновик сохранён, но таблица не изменена."
+        )
+        return
+    if not await asyncio.to_thread(update_state.claim_apply, request_key):
+        await query.edit_message_text("Запрос уже принят к записи. Повторная запись заблокирована.")
         return
     try:
+        proposal = project_updates.Proposal.model_validate_json(saved["proposal_json"])
         changed = await asyncio.to_thread(project_updates.apply, proposal)
+        await asyncio.to_thread(update_state.save, request_key, "applied", detail=", ".join(changed))
         await query.edit_message_text(
             "Google Sheets подтвердил обновление: " + ", ".join(changed)
-            + ". Пульт не синхронизирован — пока это отдельная задача.")
+            + ". Пульт ещё не синхронизирован автоматически."
+        )
     except Exception as e:
         log.exception("project update apply failed")
+        await asyncio.to_thread(update_state.save, request_key, "needs_review", detail=str(e))
         await query.edit_message_text(
-            "Не удалось завершить запись: " + str(e)[:900]
-            + "\\nПроверьте таблицу перед повторной попыткой.")
+            "Запись могла выполниться частично. Повтор запрещён до проверки "
+            "тестовой таблицы и журнала. Ошибка: " + str(e)[:700]
+        )
 
 
 # ---------- Режим выезда ----------
@@ -1132,7 +1203,9 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/разобрать"), inbox_sort))
     app.add_handler(MessageHandler(filters.Regex(r"^/обновить(?:\s|$)"), project_update_draft))
     app.add_handler(CommandHandler("update_project", project_update_draft))
-    app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel)$"))
+    app.add_handler(MessageHandler(filters.Regex(r"^/статус_обновления(?:\\s|$)"), project_update_status))
+    app.add_handler(CommandHandler("update_status", project_update_status))
+    app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel):\\d+$"))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
     app.add_handler(CallbackQueryHandler(reminder_button, pattern=r"^rem_"))
     app.add_handler(MessageHandler(
