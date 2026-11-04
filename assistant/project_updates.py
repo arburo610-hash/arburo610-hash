@@ -70,7 +70,7 @@ def inspect_patch(project_name, patch: Patch):
     return ws, index + 1, column + 1
 
 
-def prepare(proposal: Proposal):
+def prepare(proposal: Proposal, source_message: str = ""):
     """Keep independently safe edits; turn forbidden/conflicting edits into review items.
 
     Called when drafting, never writes to Google Sheets.
@@ -84,6 +84,17 @@ def prepare(proposal: Proposal):
             rejected.append(f"{patch.section} #{patch.record_id}: повторная правка «{patch.column}» — проверить вручную")
             continue
         duplicate.add(key)
+        # A general report that a stage is finished does NOT prove every task in
+        # that stage is complete. For the pilot require a precise task ID before
+        # proposing a transition to a final task status.
+        if (patch.section == "задачи" and patch.column == "Статус"
+                and patch.value.strip().casefold() in {"готово", "выполнено", "закрыто", "закрыта"}
+                and patch.record_id.casefold() not in source_message.casefold()):
+            rejected.append(
+                f"задачи #{patch.record_id}: закрытие требует отдельного прямого "
+                "подтверждения именно этой задачи; завершение этапа само по себе недостаточно"
+            )
+            continue
         if patch.column not in ALLOWED_FIELDS[patch.section]:
             rejected.append(
                 f"{patch.section} #{patch.record_id}: изменение «{patch.column}» "
