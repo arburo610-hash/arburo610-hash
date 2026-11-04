@@ -31,6 +31,7 @@ import media
 import photo_server
 import project_updates
 import pult_sync
+import brief_snapshot
 import update_state
 import reminders
 import sheets
@@ -429,6 +430,21 @@ def brief_request():
     return BRIEF_PROMPT
 
 
+def compile_verified_brief():
+    """Take a fresh read-only snapshot and summarize without tool write access."""
+    snapshot = brief_snapshot.gather()
+    request = brief_snapshot.prompt(snapshot)
+    # No LLM tool calls: only the preflighted, source-backed snapshot.
+    return gpt_backend.ask(
+        [], request,
+        "Ты — рабочий ассистент дизайнера. Пересказывай только предоставленные "
+        "данные снимка. Различай задачи, решения, вопросы, изменения, ожидания. "
+        "Недоступность таблицы означает отсутствие подтверждения, а не отсутствие задач. "
+        "Ничего не создавай и не меняй.",
+        [], lambda *_: None, max_rounds=1
+    )
+
+
 async def brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         return
@@ -436,7 +452,7 @@ async def brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Сверяю текущие этапы, задачи и ожидания. Бриф формируется только по данным таблиц."
     )
     try:
-        answer = await asyncio.to_thread(ask_claude, [], brief_request())
+        answer = await asyncio.to_thread(compile_verified_brief)
     except Exception:
         log.exception("Manual management brief failed")
         await update.message.reply_text(
@@ -1334,7 +1350,7 @@ async def reminder_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scheduled_brief(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     try:
-        answer = await asyncio.to_thread(ask_claude, [], brief_request())
+        answer = await asyncio.to_thread(compile_verified_brief)
     except (openai.APIError, RuntimeError) as e:
         answer = f"Утренняя сводка не собралась: {str(e)[:300]}"
     await send_long(context.bot, chat_id, "Доброе утро! " + answer)
