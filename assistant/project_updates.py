@@ -44,7 +44,13 @@ ALLOWED_FIELDS = {
     "этапы": {"Блокер / примечание", "Следующий шаг", "Статус выполнения работ", "Статус документооборота"},
     "задачи": {"Статус", "Следующий шаг", "Зависит от / ожидаем"},
 }
-# Статусы этапов и юридически значимые поля требуют отдельной схемы согласования.
+WORK_STATUSES = {"Не начат", "В работе", "Работы выполнены"}
+DOCUMENT_STATUSES = {
+    "Не подготовлен", "Документы готовятся", "Документы подготовлены",
+    "Передано заказчику", "Ожидаем подписания"
+}
+# Act signature and formal closure require documentary verification, not pilot text updates.
+
 
 
 def context_for(project_name):
@@ -78,6 +84,11 @@ def inspect_new_task(project_name, task: NewTask):
 def inspect_patch(project_name, patch: Patch):
     if patch.column not in ALLOWED_FIELDS[patch.section]:
         raise ValueError(f"Запрещено изменять поле {patch.section}: {patch.column}")
+    if patch.section == "этапы":
+        if patch.column == "Статус выполнения работ" and patch.value not in WORK_STATUSES:
+            raise ValueError("Недопустимый производственный статус")
+        if patch.column == "Статус документооборота" and patch.value not in DOCUMENT_STATUSES:
+            raise ValueError("Подписание акта и закрытие этапа требуют отдельной процедуры")
     _project, _sheet_id, ws = sheets._project_sheet(project_name, patch.section)
     grid = ws.get_all_values()
     head_idx = next((i for i, row in enumerate(grid) if patch.column in row), None)
