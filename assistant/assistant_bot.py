@@ -447,9 +447,14 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
     if not project or not facts:
         await update.message.reply_text("Укажите проект и фактические изменения после символа |.")
         return
-    await context.bot.send_chat_action(update.effective_chat.id, "typing")
+    await update.message.reply_text(
+        "Приняла обновление по проекту. Проверяю существующие записи и готовлю "
+        "предложение. Пока ничего в таблицы не записываю."
+    )
     try:
-        current = await asyncio.to_thread(project_updates.context_for, project)
+        current = await asyncio.wait_for(
+            asyncio.to_thread(project_updates.context_for, project), timeout=25
+        )
         instruction = (
             "Ты готовишь ТОЛЬКО проект точечных правок Google Sheets. "
             "Используй название проекта и ТОЛЬКО существующие ID задач/этапов. "
@@ -481,12 +486,12 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
             "Не меняй Пульт, не делай юридических выводов по актам. "
             "Верни только строго структурированные поля. "
         )
-        parsed = await asyncio.to_thread(
+        parsed = await asyncio.wait_for(asyncio.to_thread(
             gpt_backend.parse_content,
             [{"type": "text", "text": instruction
               + "\\nПроектный контекст: " + json.dumps(current, ensure_ascii=False)
               + "\\nНовое сообщение дизайнера: " + facts}],
-            project_updates.Proposal)
+            project_updates.Proposal), timeout=75)
         if parsed is None:
             await update.message.reply_text("Не удалось извлечь изменения. Ничего не записано.")
             return
@@ -497,6 +502,13 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
             context.chat_data["pending_project_update"] = parsed
         else:
             context.chat_data.pop("pending_project_update", None)
+    except asyncio.TimeoutError:
+        log.warning("project update timed out for project %s", project)
+        await update.message.reply_text(
+            "Не удалось завершить проверку за установленное время. "
+            "Ничего не записано. Попробуй позже или пришли только один вопрос по проекту."
+        )
+        return
     except Exception as e:
         log.exception("project update draft failed")
         await update.message.reply_text(
