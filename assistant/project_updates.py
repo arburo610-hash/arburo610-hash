@@ -161,6 +161,19 @@ def prepare(proposal: Proposal, source_message: str = ""):
         if not title or title in existing or title in seen:
             rejected.append(f"Новая задача «{task.title}»: пустое имя или дублирование; запись пропущена")
             continue
+        # Dependencies are consequential and must not be silently inferred
+        # from the title of an unrelated task or the stage's history.
+        # A natural-language explicit prerequisite is acceptable: no need
+        # for the designer to know internal task IDs.
+        if task.dependency and not any(
+            phrase in source_message.casefold()
+            for phrase in ("зависит от", "после ", "только после", "при условии", "когда ", "сначала ")
+        ):
+            rejected.append(
+                f"Задача «{task.title}»: автоматически предложенная зависимость "
+                f"«{task.dependency}» не записывается без подтверждения"
+            )
+            task.dependency = ""
         try:
             inspect_new_task(proposal.project, task)
         except ValueError as exc:
