@@ -32,8 +32,18 @@ def _pilot_project():
 
 def _test_pult():
     configured = os.environ.get("TEST_PULT_SPREADSHEET_ID", "").strip()
-    if configured != TEST_PULT_ID or configured == sheets.PULT_ID:
-        raise PermissionError("Запрещена запись в Пульт: нужна отдельная проверенная тестовая копия")
+    if not configured:
+        raise PermissionError(
+            "Тестовый сервис Railway не видит TEST_PULT_SPREADSHEET_ID. "
+            "Проверь, что переменная сохранена в vigilant-rebirth и применено новое развёртывание"
+        )
+    if configured != TEST_PULT_ID:
+        raise PermissionError(
+            "Значение TEST_PULT_SPREADSHEET_ID не совпадает с проверенной тестовой копией. "
+            "Укажи только ID таблицы, без ссылки, кавычек или пробелов внутри"
+        )
+    if configured == sheets.PULT_ID:
+        raise PermissionError("Запрещено использовать рабочий Пульт для тестовой записи")
     return sheets._gc().open_by_key(configured).worksheet(sheets.PULT_SHEET)
 
 
