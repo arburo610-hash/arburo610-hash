@@ -20,7 +20,8 @@ class UpdateStateTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_ready_claim_prevents_duplicate_apply(self):
-        update_state.start(123, 45, "ЖК МОД", "описание факта")
+        record = update_state.start(123, 45, "ЖК МОД", "описание факта")
+        self.assertEqual(record["state"], "received")
         key = "123:45"
         self.assertEqual(update_state.get(key)["state"], "received")
         update_state.save(key, "ready", '{"project":"ЖК МОД"}')
