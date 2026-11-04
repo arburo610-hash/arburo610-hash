@@ -490,8 +490,20 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
             "статусов. "
             "Для следующего шага и зависимостей используй только подтверждённые факты, "
             "а не предполагаемые достижения. "
+            "В тестовой таблице «02 Этапы» есть поля «Статус выполнения работ» и "
+            "«Статус документооборота». Предлагай правки по явно сообщённым фактам. "
+            "Производственный статус: «Не начат», «В работе», «Работы выполнены». "
+            "Документальный статус: «Не подготовлен», «Документы готовятся», "
+            "«Документы подготовлены», «Передано заказчику», «Ожидаем подписания», "
+            "«Акт подписан», «Этап закрыт». Не считай подписанным акт без прямого "
+            "подтверждения. Работы этапа 1 завершены, но акта нет: «Работы выполнены» "
+            "и «Не подготовлен». Эскизы этапа 2 уже в работе: производственный "
+            "статус «В работе». Старое поле «Статус этапа» не меняй. "
+            "Конкретные новые действия предлагай в new_tasks, а не в unresolved. "
+            "Не создавай дублирующие задачи и не выдумывай сроки. "
             "Для обычных точечных правок выбирай только столбцы: в этапах — "
-            "«Блокер / примечание», «Следующий шаг»; в задачах — «Статус», "
+            "«Блокер / примечание», «Следующий шаг», «Статус выполнения работ», " 
+            "«Статус документооборота»; в задачах — «Статус», "
             "«Следующий шаг», «Зависит от / ожидаем». "
             "НЕ предлагай изменения статуса этапа, акта, аванса, дат или согласований "
             "как обычную правку: такие события опиши отдельно в unresolved "
@@ -509,7 +521,7 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
             "самостоятельно проверь их в Google Sheets, а не проси пользователя "
             "переписывать содержимое ячеек. Если значение расходится при проверке, "
             "отложи только эту правку и сообщи о расхождении. "
-            "Если задача новая, добавь её только в unresolved с понятным названием, "
+            "Если задача новая, добавь её в new_tasks с понятным названием, "
             "не проси пользователя самому создавать её в таблице. "
             "Не меняй Пульт, не делай юридических выводов по актам. "
             "Верни только строго структурированные поля. "
@@ -524,8 +536,9 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("Не удалось извлечь изменения. Ничего не записано.")
             return
         parsed.project = current["проект"]
+        parsed.source_message = facts
         parsed = await asyncio.to_thread(project_updates.prepare, parsed, facts)
-        if parsed.patches:
+        if parsed.patches or parsed.new_tasks:
             await asyncio.to_thread(project_updates.validate, parsed)
             context.chat_data["pending_project_update"] = parsed
         else:
@@ -549,11 +562,14 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
             f"{i}. {patch.section} #{patch.record_id}, {patch.column}: "
             f"«{patch.expected[:100]}» → «{patch.value[:180]}»"
             + (f" ({patch.reason[:90]})" if patch.reason else ""))
+    for task in parsed.new_tasks:
+        lines.append(f"Новая задача: {task.title} ({task.stage}; {task.responsible}; "
+                     f"приоритет {task.priority}; следующий шаг: {task.next_step})")
     if parsed.unresolved:
-        lines.append("Уточнить / внести отдельной задачей:")
+        lines.append("Требует уточнения или отдельного согласования:")
         lines.extend("• " + x[:230] for x in parsed.unresolved)
-    if not parsed.patches:
-        lines.append("Нет однозначных точечных изменений. Ничего не записано.")
+    if not parsed.patches and not parsed.new_tasks:
+        lines.append("Нет однозначных изменений или новых задач. Ничего не записано.")
         context.chat_data.pop("pending_project_update", None)
         await send_long(context.bot, update.effective_chat.id, "\\n".join(lines))
         return
