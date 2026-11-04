@@ -29,6 +29,20 @@ class UpdateStateTests(unittest.TestCase):
         self.assertFalse(update_state.claim_apply(key))
         self.assertEqual(update_state.get(key)["state"], "applying")
 
+    def test_completed_request_cannot_be_applied_again_after_restart(self):
+        update_state.start(5, 99, "ЖК МОД", "одна новая задача")
+        update_state.save("5:99", "ready", '{"project":"ЖК МОД"}')
+        self.assertTrue(update_state.claim_apply("5:99"))
+        update_state.save("5:99", "applied", detail="Новая задача MOD-T-022")
+        self.assertFalse(update_state.claim_apply("5:99"))
+        self.assertEqual(update_state.get("5:99")["state"], "applied")
+
+    def test_cancelled_request_cannot_be_applied(self):
+        update_state.start(5, 100, "ЖК МОД", "тест отмены")
+        update_state.save("5:100", "ready", '{"project":"ЖК МОД"}')
+        update_state.save("5:100", "cancelled")
+        self.assertFalse(update_state.claim_apply("5:100"))
+
     def test_restart_read_and_status(self):
         update_state.start(1, 11, "ЖК МОД", "текст")
         update_state.save("1:11", "failed", detail="потеря соединения")
