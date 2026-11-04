@@ -456,9 +456,12 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
             "Не добавляй и не удаляй строки, не меняй суммы, даты, авансы, акты, "
             "не выдавай выполнение работ за документальное закрытие. "
             "Не заменяй утверждённые клиентом решения. "
-            "Выбирай только столбцы: в этапах — «Статус этапа», «Статус», "
+            "Для обычных точечных правок выбирай только столбцы: в этапах — "
             "«Блокер / примечание», «Следующий шаг»; в задачах — «Статус», "
             "«Следующий шаг», «Зависит от / ожидаем». "
+            "НЕ предлагай изменения статуса этапа, акта, аванса, дат или согласований "
+            "как обычную правку: такие события опиши отдельно в unresolved "
+            "как требующие специального подтверждения и отдельного механизма. "
             "Поле expected должно в точности соответствовать исходной ячейке; "
             "если значение не видно или оно неясно, оставь вопрос в unresolved, "
             "не предлагай правку. Если задача новая, добавь её только в unresolved. "
@@ -475,9 +478,12 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("Не удалось извлечь изменения. Ничего не записано.")
             return
         parsed.project = current["проект"]
+        parsed = await asyncio.to_thread(project_updates.prepare, parsed)
         if parsed.patches:
             await asyncio.to_thread(project_updates.validate, parsed)
-        context.chat_data["pending_project_update"] = parsed
+            context.chat_data["pending_project_update"] = parsed
+        else:
+            context.chat_data.pop("pending_project_update", None)
     except Exception as e:
         log.exception("project update draft failed")
         await update.message.reply_text(
