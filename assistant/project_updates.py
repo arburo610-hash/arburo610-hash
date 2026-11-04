@@ -79,14 +79,14 @@ def validate(proposal: Proposal):
 
 
 def apply(proposal: Proposal):
-    # Even if writes are enabled, only an explicitly allowlisted TEST copy may be changed.
-    allowlist = {x.strip() for x in os.environ.get("PROJECT_UPDATE_TEST_SHEET_IDS", "").split(",") if x.strip()}
+    # Same test-copy protection for updates and existing append-based workflows.
     project = sheets.find_project(proposal.project)
-    spreadsheet_id = sheets._spreadsheet_id((project or {}).get("Таблица управления", ""))
-    if not spreadsheet_id or spreadsheet_id not in allowlist:
-        raise PermissionError("Запись запрещена: проектная таблица не внесена в список тестовых копий")
-    if spreadsheet_id == "1SzBEU99reXbf_hOFhCxXDbamhTGArsMNkCqcWRfvsw4":
-        raise PermissionError("Запись в рабочую таблицу ЖК МОД запрещена в пилоте")
+    if not project:
+        raise ValueError("Проект не найден в Пульте")
+    spreadsheet_id = sheets._test_override_id(project)
+    if not spreadsheet_id:
+        raise PermissionError("Для проекта не указана тестовая копия")
+    sheets._assert_test_write_allowed(spreadsheet_id)
     # No blind bulk replacement. Stop on conflict and report what was already written.
     changed = []
     for patch in proposal.patches:
