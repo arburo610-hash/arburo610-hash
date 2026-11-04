@@ -30,6 +30,7 @@ import inbox
 import media
 import photo_server
 import project_updates
+import pult_sync
 import update_state
 import reminders
 import sheets
@@ -609,6 +610,80 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
         "Это черновик. Изменения в таблице НЕ сохранены. Подтверждение применяется только "
         "к перечисленным существующим ячейкам. Пульт пока не синхронизируется автоматически.",
         reply_markup=kb)
+
+
+async def pult_sync_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Preview a safe, isolated summary — never update the real Pult."""
+    if not allowed(update):
+        return
+    project = command_args(update)
+    if project.strip().casefold().replace("жк ", "") not in {"мод"}:
+        await update.message.reply_text("Пока синхронизация доступна только для тестовой копии ЖК МОД. Формат: /синхр_пульт МОД")
+        return
+    await update.message.reply_text("Проверяю этапы и тестовую копию Пульта. Пока ничего не записываю.")
+    key = f"{update.effective_chat.id}:{update.message.message_id}"
+    try:
+        await asyncio.to_thread(update_state.start, update.effective_chat.id,
+                                update.message.message_id, "ЖК МОД", "Синхронизация тестового Пульта")
+        proposal = await asyncio.wait_for(asyncio.to_thread(pult_sync.draft), timeout=35)
+        await asyncio.to_thread(update_state.save, key, "ready", proposal.model_dump_json())
+    except Exception as exc:
+        log.exception("pilot Pult sync draft unavailable")
+        await asyncio.to_thread(update_state.save, key, "review", detail=str(exc))
+        await update.message.reply_text("Синхронизация пока не готова: " + str(exc)[:500] + ". Ничего не изменено.")
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Подтвердить тестовый Пульт", callback_data=f"pult_apply:{update.message.message_id}"),
+        InlineKeyboardButton("Отменить", callback_data=f"pult_cancel:{update.message.message_id}")
+    ]])
+    await update.message.reply_text(
+        "Предложение для ТЕСТОВОГО Пульта, ЖК МОД. Только поле «Текущий этап / период»."
+        + "\\nБыло: " + proposal.expected
+        + "\\nБудет: " + proposal.value
+        + "\\nДругие проекты, сроки, счётчики и рабочий Пульт не меняются.",
+        reply_markup=keyboard
+    )
+
+
+async def pult_sync_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not allowed(update):
+        return
+    try:
+        action, message_id = query.data.split(":", 1)
+        key = f"{update.effective_chat.id}:{int(message_id)}"
+    except (ValueError, AttributeError):
+        await query.edit_message_text("Некорректная кнопка синхронизации.")
+        return
+    saved = await asyncio.to_thread(update_state.get, key)
+    if not saved or saved["state"] != "ready" or saved["project"] != "ЖК МОД":
+        await query.edit_message_text("Предложение уже неактуально. Повторная запись запрещена.")
+        return
+    if action == "pult_cancel":
+        await asyncio.to_thread(update_state.save, key, "cancelled")
+        await query.edit_message_text("Отменено. Тестовый Пульт не изменён.")
+        return
+    if os.environ.get("PULT_SYNC_ENABLED", "false").lower() != "true":
+        await query.edit_message_text(
+            "Запись в тестовый Пульт пока выключена. Черновик сохранён, Пульт не изменён."
+        )
+        return
+    if not await asyncio.to_thread(update_state.claim_apply, key):
+        await query.edit_message_text("Этот запрос уже обрабатывается или применён.")
+        return
+    try:
+        proposal = pult_sync.PultProposal.model_validate_json(saved["proposal_json"])
+        result = await asyncio.to_thread(pult_sync.apply, proposal)
+        await asyncio.to_thread(update_state.save, key, "applied", detail=result)
+        await query.edit_message_text("Проверено: тестовый Пульт обновлён — " + result)
+    except Exception as exc:
+        log.exception("Pult sync failed; manual review required")
+        await asyncio.to_thread(update_state.save, key, "needs_review", detail=str(exc))
+        await query.edit_message_text(
+            "Результат синхронизации требует проверки. Не повторяй запись автоматически: "
+            + str(exc)[:500]
+        )
 
 
 async def project_update_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1219,6 +1294,8 @@ def main():
     app.add_handler(CommandHandler("update_project", project_update_draft))
     app.add_handler(MessageHandler(filters.Regex(r"^/статус_обновления(?:\s|$)"), project_update_status))
     app.add_handler(CommandHandler("update_status", project_update_status))
+    app.add_handler(MessageHandler(filters.Regex(r"^/синхр_пульт(?:\s|$)"), pult_sync_draft))
+    app.add_handler(CallbackQueryHandler(pult_sync_decision, pattern=r"^pult_(?:apply|cancel):\d+$"))
     app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel):\d+$"))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
     app.add_handler(CallbackQueryHandler(reminder_button, pattern=r"^rem_"))
