@@ -38,6 +38,36 @@ class BriefSnapshotTests(unittest.TestCase):
         self.assertEqual(island["сведения_пульта"]["Активные задачи"], "5")
         self.assertIn("ТЕСТОВЫЙ БРИФ", brief_snapshot.prompt(snapshot))
 
+    def test_old_today_text_is_not_due_today(self):
+        today = __import__("datetime").date(2026, 11, 4)
+        for task_id, old_due in [
+            ("MOD-T-012", "28.09.2026"),
+            ("MOD-T-017", "02.10.2026"),
+            ("TASK-021", "26.10–01.11.2026")
+        ]:
+            task = brief_snapshot._annotate_task({
+                "ID": task_id, "Срок": old_due,
+                "Следующий шаг": "Провести созвон сегодня"
+            }, today)
+            self.assertFalse(task["Срок приходится на дату брифа"])
+            self.assertIn("В ПРОШЛОМ", task["Проверка даты для брифа"])
+            self.assertIn("историческое", task["Предупреждение о старой формулировке"])
+
+    def test_current_explicit_date_can_be_due_today(self):
+        today = __import__("datetime").date(2026, 11, 4)
+        task = brief_snapshot._annotate_task({
+            "ID": "X", "Срок": "04.11.2026", "Следующий шаг": "Проверить сегодня"
+        }, today)
+        self.assertTrue(task["Срок приходится на дату брифа"])
+        self.assertNotIn("Предупреждение о старой формулировке", task)
+
+    def test_missing_date_is_not_due_today(self):
+        today = __import__("datetime").date(2026, 11, 4)
+        task = brief_snapshot._annotate_task({
+            "ID": "X", "Срок": "", "Следующий шаг": "Сделать сегодня"
+        }, today)
+        self.assertFalse(task["Срок приходится на дату брифа"])
+
     def test_completed_project_not_queried(self):
         with patch.object(brief_snapshot.sheets, "list_projects", return_value=[
             {"Проект": "ЖК Талисман", "Статус": "Завершён"}
