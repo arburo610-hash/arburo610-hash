@@ -31,6 +31,7 @@ import media
 import photo_server
 import project_updates
 import pult_sync
+import stage_plan
 import brief_snapshot
 import update_state
 import reminders
@@ -656,6 +657,108 @@ async def project_update_draft(update: Update, context: ContextTypes.DEFAULT_TYP
         "Это черновик. Изменения в таблице НЕ сохранены. Подтверждение применяется только "
         "к перечисленным существующим ячейкам. Пульт пока не синхронизируется автоматически.",
         reply_markup=kb)
+
+
+async def plan_missing(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        return
+    if command_args(update).casefold().replace("жк ", "").strip() != "мод":
+        await update.message.reply_text("Только тестовый ЖК МОД. Формат: /сроки МОД")
+        return
+    try:
+        data = await asyncio.wait_for(asyncio.to_thread(stage_plan.missing), timeout=35)
+    except Exception as exc:
+        log.exception("Pilot stage dates unavailable")
+        await update.message.reply_text("Не удалось получить даты: " + str(exc)[:400])
+        return
+    lines = ["ПЛАНОВЫЕ ДАТЫ • ТЕСТ ЖК МОД"]
+    for item in data:
+        lines.append(
+            f"Этап {item['этап']}: {item['название']}\\n"
+            f"Начало: {item['начало']}; завершение: {item['завершение']}"
+        )
+    lines.append("Для предложения дат: /план МОД | этап 2 | ДД.ММ.ГГГГ | ДД.ММ.ГГГГ")
+    await update.message.reply_text("\\n\\n".join(lines))
+
+
+async def plan_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        return
+    raw = command_args(update)
+    parts = [p.strip() for p in raw.split("|")]
+    if len(parts) != 4 or parts[0].casefold().replace("жк ", "").strip() != "мод":
+        await update.message.reply_text("Формат: /план МОД | этап 2 | ДД.ММ.ГГГГ | ДД.ММ.ГГГГ")
+        return
+    match = re.fullmatch(r"этап\\s*([123])", parts[1].casefold())
+    if not match:
+        await update.message.reply_text("Укажи номер этапа: этап 1, этап 2 или этап 3")
+        return
+    key = f"{update.effective_chat.id}:{update.message.message_id}"
+    try:
+        previous = await asyncio.to_thread(
+            update_state.start, update.effective_chat.id, update.message.message_id, "ЖК МОД", raw
+        )
+        if previous["state"] != "received":
+            await update.message.reply_text("Запрос уже существует, повторная подготовка запрещена.")
+            return
+        proposal = await asyncio.wait_for(
+            asyncio.to_thread(stage_plan.draft, int(match.group(1)), parts[2], parts[3]),
+            timeout=35
+        )
+        await asyncio.to_thread(update_state.save, key, "ready", proposal.model_dump_json())
+    except Exception as exc:
+        log.warning("Stage plan draft unavailable: %s", type(exc).__name__)
+        await asyncio.to_thread(update_state.save, key, "review", detail=str(exc))
+        await update.message.reply_text("Предложение не подготовлено: " + str(exc)[:440] + ". Записи не было.")
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Подтвердить даты (ТЕСТ)", callback_data=f"plan_apply:{update.message.message_id}"),
+        InlineKeyboardButton("Отменить", callback_data=f"plan_cancel:{update.message.message_id}")
+    ]])
+    await update.message.reply_text(
+        f"ТЕСТ ЖК МОД, этап {proposal.stage}: {proposal.stage_name}\\n"
+        f"Было: {proposal.old_start or 'не указано'} — {proposal.old_end or 'не указано'}\\n"
+        f"Будет: {proposal.new_start} — {proposal.new_end}\\n"
+        "После подтверждения: даты в тестовой таблице проекта, тестовый Гант и журнал. "
+        "Фактические даты, акты, авансы, рабочие таблицы не меняются.",
+        reply_markup=keyboard
+    )
+
+
+async def plan_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not allowed(update):
+        return
+    try:
+        action, msg_id = query.data.split(":", 1)
+        key = f"{update.effective_chat.id}:{int(msg_id)}"
+    except (ValueError, AttributeError):
+        await query.edit_message_text("Некорректная кнопка")
+        return
+    saved = await asyncio.to_thread(update_state.get, key)
+    if not saved or saved["state"] != "ready" or saved["project"] != "ЖК МОД":
+        await query.edit_message_text("Запрос уже обработан или требует проверки")
+        return
+    if action == "plan_cancel":
+        await asyncio.to_thread(update_state.save, key, "cancelled")
+        await query.edit_message_text("Отменено. Даты не менялись.")
+        return
+    if not await asyncio.to_thread(update_state.claim_apply, key):
+        await query.edit_message_text("Повторная запись заблокирована.")
+        return
+    try:
+        proposal = stage_plan.PlanProposal.model_validate_json(saved["proposal_json"])
+        result = await asyncio.to_thread(stage_plan.apply, proposal)
+        await asyncio.to_thread(update_state.save, key, "applied", detail=result)
+        await query.edit_message_text("Подтверждено Google Sheets: " + result)
+    except Exception as exc:
+        log.exception("Stage plan write needs manual review")
+        await asyncio.to_thread(update_state.save, key, "needs_review", detail=str(exc))
+        await query.edit_message_text(
+            "Нужна ручная проверка: запись могла выполниться частично. "
+            "Не повторяй подтверждение. Ошибка: " + str(exc)[:420]
+        )
 
 
 async def pult_sync_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1400,6 +1503,9 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/статус_обновления(?:\s|$)"), project_update_status))
     app.add_handler(CommandHandler("update_status", project_update_status))
     app.add_handler(MessageHandler(filters.Regex(r"^/синхр_пульт(?:\s|$)"), pult_sync_draft))
+    app.add_handler(MessageHandler(filters.Regex(r"^/сроки(?:\\s|$)"), plan_missing))
+    app.add_handler(MessageHandler(filters.Regex(r"^/план(?:\\s|$)"), plan_draft))
+    app.add_handler(CallbackQueryHandler(plan_decision, pattern=r"^plan_(?:apply|cancel):\\d+$"))
     app.add_handler(CallbackQueryHandler(pult_sync_decision, pattern=r"^pult_(?:apply|cancel):-?\d+$"))
     app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel):\d+$"))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
