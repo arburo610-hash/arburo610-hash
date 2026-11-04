@@ -4,6 +4,7 @@ Uses sqlite on MEDIA_ROOT. The directory MUST be a persistent Railway volume to
 survive redeployments. Never automatically replay an interrupted Sheets write.
 """
 import datetime
+from contextlib import contextmanager
 import os
 import sqlite3
 import threading
@@ -13,6 +14,7 @@ DB = os.path.join(os.environ.get("MEDIA_ROOT", "media"), "project_update_request
 _LOCK = threading.RLock()
 
 
+@contextmanager
 def _connect():
     os.makedirs(os.path.dirname(os.path.abspath(DB)), exist_ok=True)
     connection = sqlite3.connect(DB, timeout=15)
@@ -28,7 +30,11 @@ def _connect():
         detail TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL
     )""")
-    return connection
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def _now():
