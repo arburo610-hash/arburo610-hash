@@ -802,9 +802,14 @@ async def project_update_decision(update: Update, context: ContextTypes.DEFAULT_
             "Google Sheets подтвердил обновление: " + ", ".join(changed)
             + ". Проверю, требуется ли синхронизация тестового Пульта."
         )
-        await propose_pult_sync_after_project(
-            update, context, proposal.project, int(message_id)
-        )
+        try:
+            await propose_pult_sync_after_project(
+                update, context, proposal.project, int(message_id)
+            )
+        except Exception:
+            # The project update is already durable and must remain "applied"
+            # even if sending the optional Pult follow-up fails.
+            log.exception("Optional Pult follow-up failed after project write")
     except Exception as e:
         log.exception("project update apply failed")
         await asyncio.to_thread(update_state.save, request_key, "needs_review", detail=str(e))
