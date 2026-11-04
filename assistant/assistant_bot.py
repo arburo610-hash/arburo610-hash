@@ -686,6 +686,57 @@ async def pult_sync_decision(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+async def propose_pult_sync_after_project(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                          project: str, original_message_id: int):
+    """Prepare one separately approved Pult update after an applied project change."""
+    if project != pult_sync.PROJECT_NAME:
+        return
+    chat_id = update.effective_chat.id
+    sync_message_id = -abs(int(original_message_id))
+    key = f"{chat_id}:{sync_message_id}"
+    try:
+        previous = await asyncio.to_thread(
+            update_state.start, chat_id, sync_message_id, project,
+            "Предложение синхронизации после подтверждённого обновления"
+        )
+        if previous["state"] != "received":
+            return
+        draft = await asyncio.wait_for(asyncio.to_thread(pult_sync.draft), timeout=35)
+        await asyncio.to_thread(update_state.save, key, "ready", draft.model_dump_json())
+    except ValueError as exc:
+        if "уже содержит актуальную сводку" in str(exc):
+            await asyncio.to_thread(update_state.save, key, "applied",
+                                    detail="Тестовый Пульт уже актуален, дополнительная запись не нужна")
+            return
+        await asyncio.to_thread(update_state.save, key, "review", detail=str(exc))
+        log.warning("Pult follow-up needs review")
+        await context.bot.send_message(
+            chat_id, "Проект сохранён. Пульт пока не изменён: " + str(exc)[:350]
+        )
+        return
+    except Exception as exc:
+        log.exception("Pult follow-up failed")
+        await asyncio.to_thread(update_state.save, key, "review", detail=str(exc))
+        await context.bot.send_message(
+            chat_id, "Проект сохранён. Синхронизация Пульта требует отдельной проверки; "
+            "никаких изменений в Пульт не внесено."
+        )
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Подтвердить тестовый Пульт",
+                             callback_data=f"pult_apply:{sync_message_id}"),
+        InlineKeyboardButton("Отменить", callback_data=f"pult_cancel:{sync_message_id}")
+    ]])
+    await context.bot.send_message(
+        chat_id,
+        "Предлагаю синхронизировать ТЕСТОВЫЙ Пульт после обновления ЖК МОД."
+        + "\nБыло: " + draft.expected
+        + "\nБудет: " + draft.value
+        + "\nТолько поле «Текущий этап / период». Рабочий Пульт не меняется.",
+        reply_markup=keyboard
+    )
+
+
 async def project_update_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update):
         return
@@ -749,7 +800,10 @@ async def project_update_decision(update: Update, context: ContextTypes.DEFAULT_
         await asyncio.to_thread(update_state.save, request_key, "applied", detail=", ".join(changed))
         await query.edit_message_text(
             "Google Sheets подтвердил обновление: " + ", ".join(changed)
-            + ". Пульт ещё не синхронизирован автоматически."
+            + ". Проверю, требуется ли синхронизация тестового Пульта."
+        )
+        await propose_pult_sync_after_project(
+            update, context, proposal.project, int(message_id)
         )
     except Exception as e:
         log.exception("project update apply failed")
@@ -1295,7 +1349,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/статус_обновления(?:\s|$)"), project_update_status))
     app.add_handler(CommandHandler("update_status", project_update_status))
     app.add_handler(MessageHandler(filters.Regex(r"^/синхр_пульт(?:\s|$)"), pult_sync_draft))
-    app.add_handler(CallbackQueryHandler(pult_sync_decision, pattern=r"^pult_(?:apply|cancel):\d+$"))
+    app.add_handler(CallbackQueryHandler(pult_sync_decision, pattern=r"^pult_(?:apply|cancel):-?\d+$"))
     app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel):\d+$"))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
     app.add_handler(CallbackQueryHandler(reminder_button, pattern=r"^rem_"))
