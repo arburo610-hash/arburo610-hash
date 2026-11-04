@@ -1176,9 +1176,23 @@ async def scheduled_brief(context: ContextTypes.DEFAULT_TYPE):
     await send_long(context.bot, chat_id, "Доброе утро! " + answer)
 
 
+async def telegram_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Report polling/transport failures without exposing tokens or auto-replaying writes."""
+    error = context.error
+    name = type(error).__name__ if error else "UnknownError"
+    if isinstance(update, Update):
+        log.error("Telegram handler error for update_id=%s: %s",
+                  update.update_id, name, exc_info=error)
+    else:
+        log.error("Telegram polling/transport error: %s", name, exc_info=error)
+    # Do not blindly retry Telegram requests or Sheets writes here.
+    # A draft survives in update_state and can be checked with /статус_обновления.
+
+
 def main():
     token = os.environ["ASSISTANT_TELEGRAM_TOKEN"]
     app = Application.builder().token(token).build()
+    app.add_error_handler(telegram_error_handler)
     app.add_handler(CommandHandler("start", start))
     # Telegram принимает в командах только латиницу; русские названия — как подсказка в /start
     app.add_handler(CommandHandler(["brief", "svodka"], brief))
@@ -1203,9 +1217,9 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/разобрать"), inbox_sort))
     app.add_handler(MessageHandler(filters.Regex(r"^/обновить(?:\s|$)"), project_update_draft))
     app.add_handler(CommandHandler("update_project", project_update_draft))
-    app.add_handler(MessageHandler(filters.Regex(r"^/статус_обновления(?:\\s|$)"), project_update_status))
+    app.add_handler(MessageHandler(filters.Regex(r"^/статус_обновления(?:\s|$)"), project_update_status))
     app.add_handler(CommandHandler("update_status", project_update_status))
-    app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel):\\d+$"))
+    app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel):\d+$"))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
     app.add_handler(CallbackQueryHandler(reminder_button, pattern=r"^rem_"))
     app.add_handler(MessageHandler(
