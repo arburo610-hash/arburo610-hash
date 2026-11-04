@@ -674,11 +674,11 @@ async def plan_missing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["ПЛАНОВЫЕ ДАТЫ • ТЕСТ ЖК МОД"]
     for item in data:
         lines.append(
-            f"Этап {item['этап']}: {item['название']}\\n"
+            f"Этап {item['этап']}: {item['название']}\n"
             f"Начало: {item['начало']}; завершение: {item['завершение']}"
         )
     lines.append("Для предложения дат: /план МОД | этап 2 | ДД.ММ.ГГГГ | ДД.ММ.ГГГГ")
-    await update.message.reply_text("\\n\\n".join(lines))
+    await update.message.reply_text("\n\n".join(lines))
 
 
 async def plan_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -689,7 +689,7 @@ async def plan_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) != 4 or parts[0].casefold().replace("жк ", "").strip() != "мод":
         await update.message.reply_text("Формат: /план МОД | этап 2 | ДД.ММ.ГГГГ | ДД.ММ.ГГГГ")
         return
-    match = re.fullmatch(r"этап\\s*([123])", parts[1].casefold())
+    match = re.fullmatch(r"этап\s*([123])", parts[1].casefold())
     if not match:
         await update.message.reply_text("Укажи номер этапа: этап 1, этап 2 или этап 3")
         return
@@ -716,9 +716,9 @@ async def plan_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("Отменить", callback_data=f"plan_cancel:{update.message.message_id}")
     ]])
     await update.message.reply_text(
-        f"ТЕСТ ЖК МОД, этап {proposal.stage}: {proposal.stage_name}\\n"
-        f"Было: {proposal.old_start or 'не указано'} — {proposal.old_end or 'не указано'}\\n"
-        f"Будет: {proposal.new_start} — {proposal.new_end}\\n"
+        f"ТЕСТ ЖК МОД, этап {proposal.stage}: {proposal.stage_name}\n"
+        f"Было: {proposal.old_start or 'не указано'} — {proposal.old_end or 'не указано'}\n"
+        f"Будет: {proposal.new_start} — {proposal.new_end}\n"
         "После подтверждения: даты в тестовой таблице проекта, тестовый Гант и журнал. "
         "Фактические даты, акты, авансы, рабочие таблицы не меняются.",
         reply_markup=keyboard
@@ -1503,9 +1503,9 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/статус_обновления(?:\s|$)"), project_update_status))
     app.add_handler(CommandHandler("update_status", project_update_status))
     app.add_handler(MessageHandler(filters.Regex(r"^/синхр_пульт(?:\s|$)"), pult_sync_draft))
-    app.add_handler(MessageHandler(filters.Regex(r"^/сроки(?:\\s|$)"), plan_missing))
-    app.add_handler(MessageHandler(filters.Regex(r"^/план(?:\\s|$)"), plan_draft))
-    app.add_handler(CallbackQueryHandler(plan_decision, pattern=r"^plan_(?:apply|cancel):\\d+$"))
+    app.add_handler(MessageHandler(filters.Regex(r"^/сроки(?:\s|$)"), plan_missing))
+    app.add_handler(MessageHandler(filters.Regex(r"^/план(?:\s|$)"), plan_draft))
+    app.add_handler(CallbackQueryHandler(plan_decision, pattern=r"^plan_(?:apply|cancel):\d+$"))
     app.add_handler(CallbackQueryHandler(pult_sync_decision, pattern=r"^pult_(?:apply|cancel):-?\d+$"))
     app.add_handler(CallbackQueryHandler(project_update_decision, pattern=r"^project_(?:apply|cancel):\d+$"))
     app.add_handler(CallbackQueryHandler(visit_decision, pattern=r"^visit_"))
