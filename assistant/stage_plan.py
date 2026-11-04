@@ -158,16 +158,19 @@ def apply(proposal):
     gantt.update(f"D{gantt_row}:E{gantt_row}", [[proposal.new_start, proposal.new_end]], value_input_option="USER_ENTERED")
     gantt.update(f"N{gantt_row}:AA{gantt_row}", [marks], value_input_option="RAW")
     got = gantt.row_values(gantt_row)
-    if len(got) < 27 or got[3:5] != [proposal.new_start, proposal.new_end] or got[13:27] != marks:
+    # Google returns rows trimmed after the last non-empty cell. The 14-week
+    # window may end with legitimate empty cells; pad those before comparing.
+    padded = (got + [""] * 27)[:27]
+    if padded[3:5] != [proposal.new_start, proposal.new_end] or padded[13:27] != marks:
         raise RuntimeError("Тестовый Гант не подтвердил все изменения. Не повторяй запрос; нужна сверка")
     # Journal goes after verified source + derived view; log errors must not be hidden.
     try:
         journal = sheets._gc().open_by_key(PROJECT_ID).worksheet("01 Журнал проекта")
         journal.append_row([
             datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3))).strftime(D_FMT),
-            "Изменение" if proposal.old_start or proposal.old_end else "Решение",
+            "Изменение" if proposal.old_start or proposal.old_end else "Планирование",
             f"Тестовое планирование: этап {proposal.stage} «{name}». План: {proposal.old_start or 'не указан'} — {proposal.old_end or 'не указан'} → {proposal.new_start} — {proposal.new_end}.",
-            "Я", proposal.new_end, "Telegram: отдельное подтверждение плана",
+            "Я", proposal.new_end, "Telegram: подтверждение дизайнера; внутренний план",
             "Да", "Записано в тестовом проекте и тестовом Ганте; фактические даты и акт не менялись."
         ], value_input_option="USER_ENTERED")
     except Exception as exc:
