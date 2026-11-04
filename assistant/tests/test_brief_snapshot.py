@@ -1,11 +1,18 @@
 """Ensure a brief never invents tasks for inaccessible projects."""
 import sys
+import importlib.util
+from unittest.mock import MagicMock
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import brief_snapshot
+# GitHub offline checks do not install runtime Google, audio or Pydantic deps.
+# Load the isolated preflight module with mocks for its external dependencies.
+module_path = Path(__file__).resolve().parents[1] / "brief_snapshot.py"
+spec = importlib.util.spec_from_file_location("brief_snapshot_unit", module_path)
+brief_snapshot = importlib.util.module_from_spec(spec)
+with patch.dict(sys.modules, {"reminders": MagicMock(), "sheets": MagicMock()}):
+    spec.loader.exec_module(brief_snapshot)
 
 
 class BriefSnapshotTests(unittest.TestCase):
